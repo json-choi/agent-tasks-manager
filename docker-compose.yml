@@ -1,0 +1,36 @@
+services:
+  app:
+    build: .
+    command: bun src/server/index.ts
+    environment:
+      DATA_DIR: /data
+      PORT: ${PORT:-3011}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3011}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+    ports:
+      - "${PORT:-3011}:${PORT:-3011}"
+    volumes:
+      - task_manager_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"const port=process.env.PORT||'3011'; const r=await fetch('http://localhost:'+port+'/health'); process.exit(r.ok?0:1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    command: bun src/worker/index.ts
+    environment:
+      DATA_DIR: /data
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      WORKER_INTERVAL_MS: 60000
+      DAILY_DIGEST_ENABLED: ${DAILY_DIGEST_ENABLED:-0}
+      DAILY_DIGEST_HOUR: ${DAILY_DIGEST_HOUR:-9}
+    volumes:
+      - task_manager_data:/data
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  task_manager_data:

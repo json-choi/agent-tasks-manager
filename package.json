@@ -1,0 +1,51 @@
+{
+  "name": "agent-tasks-manager",
+  "version": "0.1.0",
+  "description": "Self-hosted task manager for teams already using Hermes Agent or OpenClaw as their Slack bot.",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "atm": "./bin/task-manager.js",
+    "agent-tasks-manager": "./bin/task-manager.js",
+    "task-manager": "./bin/task-manager.js"
+  },
+  "files": [
+    "agent-plugin/",
+    "assets/brand/atm-mark.svg",
+    "assets/brand/atm-persona.svg",
+    "bin/",
+    "docs/roadmap/",
+    "LICENSE",
+    "public/",
+    "src/",
+    "Dockerfile",
+    ".env.example",
+    "README.md",
+    "bun.lock",
+    "docker-compose.yml",
+    "install.sh",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "build": "bun run build:client",
+    "build:client": "bun build src/client/dashboard.ts --outfile public/src/main.js",
+    "dev": "bun run build:client && bun --watch src/server/index.ts",
+    "start": "bun src/server/index.ts",
+    "worker": "bun src/worker/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "cli:check": "node --check bin/task-manager.js",
+    "prepack": "bun run build:client"
+  },
+  "dependencies": {
+    "@elysiajs/static": "latest",
+    "better-auth": "^1.6.9",
+    "elysia": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
