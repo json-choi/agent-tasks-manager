@@ -5,6 +5,27 @@
   "private": false,
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/json-choi/agent-tasks-manager.git"
+  },
+  "homepage": "https://github.com/json-choi/agent-tasks-manager#readme",
+  "bugs": {
+    "url": "https://github.com/json-choi/agent-tasks-manager/issues"
+  },
+  "keywords": [
+    "agent",
+    "slack",
+    "task-manager",
+    "self-hosted",
+    "hermes",
+    "openclaw",
+    "elysia",
+    "bun"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "atm": "./bin/task-manager.js",
     "agent-tasks-manager": "./bin/task-manager.js",
