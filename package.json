@@ -27,9 +27,9 @@
     "access": "public"
   },
   "bin": {
-    "atm": "./bin/task-manager.js",
-    "agent-tasks-manager": "./bin/task-manager.js",
-    "task-manager": "./bin/task-manager.js"
+    "atm": "bin/task-manager.js",
+    "agent-tasks-manager": "bin/task-manager.js",
+    "task-manager": "bin/task-manager.js"
   },
   "files": [
     "agent-plugin/",
