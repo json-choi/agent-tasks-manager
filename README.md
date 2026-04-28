@@ -69,6 +69,53 @@ Use a different port when needed:
 npx @jaesong/agent-task-manager setup --port auto --open
 ```
 
+To hand installation to an existing Slack-connected OpenClaw agent before ATM is running, send OpenClaw the GitHub install guide:
+
+```text
+https://github.com/json-choi/agent-task-manager/blob/main/docs/install/openclaw-agent-install.md
+```
+
+OpenClaw can fetch the raw Markdown and adjacent manifest, ask for approval through Slack, request `gh auth login` or `cloudflared tunnel login` locally when optional integrations are needed, then run the ATM installer with bootstrap values so it installs its own Task Manager skill. The same guide includes a clean uninstall path that prefers the ATM API for token revocation and falls back to file-only removal only when the server cannot be started.
+
+### Unattended OpenClaw Bootstrap
+
+For a first-run install that does not require clicking through setup, pass the bootstrap values up front. ATM creates the first admin, generates the OpenClaw agent token, writes `task-manager.env` into the OpenClaw workspace, installs the skill files, and optionally reloads OpenClaw.
+
+```bash
+npx @jaesong/agent-task-manager setup \
+  --bootstrap \
+  --admin-email admin@example.com \
+  --admin-password "replace-with-a-long-password" \
+  --openclaw-workspace "$HOME/.openclaw" \
+  --open
+```
+
+Equivalent `.env` values:
+
+```bash
+TASK_MANAGER_BOOTSTRAP=true
+TASK_MANAGER_ADMIN_EMAIL=admin@example.com
+TASK_MANAGER_ADMIN_PASSWORD=replace-with-a-long-password
+TASK_MANAGER_OPENCLAW_WORKSPACE=/Users/me/.openclaw
+TASK_MANAGER_OPENCLAW_RUN_RELOAD=true
+```
+
+Useful optional bootstrap values:
+
+```bash
+TASK_MANAGER_OPENCLAW_CLI=openclaw
+TASK_MANAGER_OPENCLAW_FORCE_INSTALL=false
+TASK_MANAGER_OPENCLAW_REGENERATE_TOKEN=true
+TASK_MANAGER_SLACK_PERMISSIONS_REVIEWED=true
+TASK_MANAGER_CLOUDFLARE_TUNNEL_TOKEN=
+TASK_MANAGER_PUBLIC_ACCESS_MODE=remote
+TASK_MANAGER_PUBLIC_URL=https://tasks.example.com
+GITHUB_TOKEN=
+GITHUB_WEBHOOK_SECRET=
+```
+
+Bootstrap is idempotent: after the OpenClaw skill env file exists, later starts keep the existing agent token unless `TASK_MANAGER_OPENCLAW_FORCE_INSTALL=true` is set. Because `.env` can contain bootstrap credentials, keep file permissions tight and remove one-time admin password values after the first successful run if your deployment process does not need them again.
+
 ## Updates
 
 Installed ATM copies update themselves before `atm start` and `atm run`. The CLI checks the latest npm release, preserves the install directory data and `.env`, rebuilds the dashboard, then starts the service. Running processes are not hot-swapped; the update applies on the next start.
@@ -106,6 +153,8 @@ BETTER_AUTH_SECRET=replace-with-a-random-secret-at-least-32-characters
 GITHUB_TOKEN=github_pat_or_app_token_for_issue_creation
 GITHUB_WEBHOOK_SECRET=shared_secret_configured_on_the_github_webhook
 ```
+
+For unattended setup, also set `TASK_MANAGER_BOOTSTRAP=true`, `TASK_MANAGER_ADMIN_EMAIL`, `TASK_MANAGER_ADMIN_PASSWORD`, and `TASK_MANAGER_OPENCLAW_WORKSPACE`. The generated OpenClaw API token is not stored in the ATM database in plaintext; it is written once to `<openclaw-workspace>/skills/task-manager/task-manager.env`.
 
 Storage defaults to `./data`:
 

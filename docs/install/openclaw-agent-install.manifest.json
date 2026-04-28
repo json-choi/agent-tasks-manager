@@ -1,0 +1,177 @@
+{
+  "name": "agent-task-manager-openclaw-github-install",
+  "version": 1,
+  "phase": "pre-server",
+  "audience": "OpenClaw install assistant",
+  "guideUrl": "https://raw.githubusercontent.com/json-choi/agent-task-manager/main/docs/install/openclaw-agent-install.md",
+  "secretPolicy": {
+    "slack": "Use DM/modal/private input for credentials. Never post tokens, passwords, or bearer sessions to public Slack channels.",
+    "cli": "Prefer gh auth login and cloudflared tunnel login over asking users to paste long-lived tokens.",
+    "agentToken": "Do not ask the user for TASK_MANAGER_API_TOKEN. ATM generates it and writes it to the OpenClaw workspace during plugin install."
+  },
+  "approvalFlow": [
+    {
+      "id": "approve_install",
+      "surface": "slack_dm_or_modal",
+      "prompt": "Install Agent Task Manager on this machine and connect it to this OpenClaw workspace?",
+      "required": true
+    },
+    {
+      "id": "first_admin",
+      "surface": "private_input",
+      "prompt": "Collect first admin email and password for ATM bootstrap.",
+      "required": true
+    },
+    {
+      "id": "workspace_path",
+      "surface": "private_input",
+      "prompt": "Ask for OpenClaw workspace path only if detection is uncertain.",
+      "required": false
+    },
+    {
+      "id": "github_login",
+      "surface": "local_cli",
+      "command": "gh auth login",
+      "required": false
+    },
+    {
+      "id": "cloudflare_login",
+      "surface": "local_cli",
+      "command": "cloudflared tunnel login",
+      "required": false
+    }
+  ],
+  "uninstallApprovalFlow": [
+    {
+      "id": "approve_uninstall",
+      "surface": "slack_dm_or_modal",
+      "prompt": "Remove the Agent Task Manager integration from this OpenClaw workspace?",
+      "required": true,
+      "actions": [
+        "disconnect_openclaw",
+        "remove_atm_too",
+        "cancel"
+      ]
+    },
+    {
+      "id": "admin_login_for_revoke",
+      "surface": "private_input",
+      "prompt": "Ask an ATM admin to approve login so the OpenClaw agent token can be revoked.",
+      "required": true,
+      "skipOnlyIf": "ATM cannot be started and the user accepts file-only uninstall"
+    }
+  ],
+  "workspaceDetection": [
+    "TASK_MANAGER_OPENCLAW_WORKSPACE",
+    "OPENCLAW_WORKSPACE",
+    "OPENCLAW_HOME",
+    "OPENCLAW_AGENT_HOME",
+    "~/.openclaw",
+    "~/.config/openclaw"
+  ],
+  "installCommand": [
+    "npx",
+    "@jaesong/agent-task-manager",
+    "setup",
+    "--bootstrap",
+    "--admin-email",
+    "$ATM_ADMIN_EMAIL",
+    "--admin-password",
+    "$ATM_ADMIN_PASSWORD",
+    "--openclaw-workspace",
+    "$OPENCLAW_WORKSPACE",
+    "--no-openclaw-reload"
+  ],
+  "postInstallCommands": [
+    "openclaw skills reload"
+  ],
+  "uninstall": {
+    "preferred": {
+      "requiresAtmServer": true,
+      "reason": "Revokes the saved OpenClaw agent token and removes local skill files.",
+      "startCommand": [
+        "atm",
+        "run",
+        "--dir",
+        "${TASK_MANAGER_DIR:-$HOME/.agent-task-manager}",
+        "--no-update"
+      ],
+      "apiCalls": [
+        {
+          "id": "admin_login",
+          "method": "POST",
+          "path": "/api/auth/login",
+          "auth": "none",
+          "body": {
+            "email": "<private admin email>",
+            "password": "<private admin password>"
+          },
+          "returns": "admin bearer token"
+        },
+        {
+          "id": "uninstall_openclaw",
+          "method": "POST",
+          "path": "/api/setup/agent/uninstall",
+          "auth": "admin bearer",
+          "body": {
+            "type": "openclaw",
+            "workspacePath": "$OPENCLAW_WORKSPACE",
+            "runReload": false
+          },
+          "effects": [
+            "Revokes the OpenClaw agent API token in ATM",
+            "Removes <workspace>/skills/task-manager",
+            "Removes <workspace>/skills/shared/task-manager-client.ts when present",
+            "Removes legacy task-manager plugin files when present"
+          ]
+        }
+      ],
+      "postCommands": [
+        "openclaw skills reload"
+      ]
+    },
+    "fileOnlyFallback": {
+      "useOnlyWhen": "ATM cannot be started or the user accepts token revoke cannot be verified.",
+      "commands": [
+        "rm -rf \"$OPENCLAW_WORKSPACE/skills/task-manager\"",
+        "rm -f \"$OPENCLAW_WORKSPACE/skills/shared/task-manager-client.ts\"",
+        "rmdir \"$OPENCLAW_WORKSPACE/skills/shared\" 2>/dev/null || true",
+        "rm -rf \"$OPENCLAW_WORKSPACE/plugins/task-manager\"",
+        "rm -f \"$OPENCLAW_WORKSPACE/plugins/shared/task-manager-client.ts\"",
+        "rmdir \"$OPENCLAW_WORKSPACE/plugins/shared\" 2>/dev/null || true",
+        "openclaw skills reload"
+      ],
+      "limitation": "This cannot revoke a token stored in ATM's database."
+    },
+    "removeAtmApp": {
+      "requiresExplicitApproval": true,
+      "command": [
+        "atm",
+        "uninstall",
+        "--dir",
+        "${TASK_MANAGER_DIR:-$HOME/.agent-task-manager}",
+        "--remove-data"
+      ],
+      "warning": "Deletes local ATM data, tasks, audit logs, and token database."
+    }
+  },
+  "verification": [
+    "Check <openclaw-workspace>/skills/task-manager/task-manager.env exists.",
+    "Call POST $TASK_MANAGER_API_URL/api/agent/connect/test with x-agent-id and bearer token from task-manager.env.",
+    "Confirm OpenClaw routes Slack messages, interactions, and scheduled outbox polling to the task-manager skill."
+  ],
+  "uninstallVerification": [
+    "Check <openclaw-workspace>/skills/task-manager no longer exists.",
+    "Check <openclaw-workspace>/skills/task-manager/task-manager.env no longer exists.",
+    "Check <openclaw-workspace>/skills/shared/task-manager-client.ts no longer exists, unless another integration owns it.",
+    "Confirm OpenClaw skills reload completed.",
+    "Confirm agent token revoked when the ATM API uninstall path was used."
+  ],
+  "forbiddenSlackOutputs": [
+    "TASK_MANAGER_API_TOKEN",
+    "GITHUB_TOKEN",
+    "Cloudflare tunnel token",
+    "ATM admin password",
+    "Admin bearer session"
+  ]
+}
