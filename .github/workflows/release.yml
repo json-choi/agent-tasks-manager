@@ -12,9 +12,6 @@ permissions:
   pull-requests: write
   id-token: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -28,7 +25,7 @@ jobs:
     steps:
       - name: Release Please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
@@ -36,7 +33,7 @@ jobs:
 
       - name: Checkout
         if: ${{ steps.release.outputs.release_created == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         if: ${{ steps.release.outputs.release_created == 'true' }}
@@ -46,7 +43,7 @@ jobs:
 
       - name: Setup Node
         if: ${{ steps.release.outputs.release_created == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
