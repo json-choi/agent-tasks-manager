@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="${TASK_MANAGER_DIR:-$HOME/.agent-tasks-manager}"
 PORT="${PORT:-3011}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:${PORT}}"
-INSTALL_MODE="${TASK_MANAGER_INSTALL_MODE:-local}"
 AUTH_SECRET="${BETTER_AUTH_SECRET:-}"
 
 if [ -z "$AUTH_SECRET" ] && [ -f "$ROOT_DIR/.env" ]; then
@@ -22,7 +21,7 @@ fi
 mkdir -p "$ROOT_DIR"
 cd "$ROOT_DIR"
 
-if [ ! -f docker-compose.yml ]; then
+if [ ! -f package.json ] || [ ! -f bin/task-manager.js ]; then
   echo "Copy this repository into $ROOT_DIR before running install.sh, or set TASK_MANAGER_DIR to the repository path."
   exit 1
 fi
@@ -32,37 +31,17 @@ DATA_DIR=${DATA_DIR:-$ROOT_DIR/data}
 PORT=${PORT}
 PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
 BETTER_AUTH_SECRET=${AUTH_SECRET}
-TASK_MANAGER_INSTALL_MODE=${INSTALL_MODE}
 EOF
 
-if [ "$INSTALL_MODE" = "docker" ]; then
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "Docker is required for TASK_MANAGER_INSTALL_MODE=docker."
-    exit 1
-  fi
-
-  if ! docker compose version >/dev/null 2>&1; then
-    echo "Docker Compose v2 is required for TASK_MANAGER_INSTALL_MODE=docker."
-    exit 1
-  fi
-
-  docker compose up -d --build
-else
-  if ! command -v bun >/dev/null 2>&1; then
-    echo "Bun is required for local mode. Install Bun or set TASK_MANAGER_INSTALL_MODE=docker."
-    exit 1
-  fi
-
-  bun install
-  bun run build
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Bun is required to install ATM."
+  exit 1
 fi
+
+bun install
+bun run build
 
 echo "Setup URL: ${PUBLIC_BASE_URL}/setup"
 echo "Health:    ${PUBLIC_BASE_URL}/health"
-
-if [ "$INSTALL_MODE" = "docker" ]; then
-  echo "ATM is starting."
-else
-  echo "ATM is installed."
-  echo "Run app+worker: DATA_DIR=${ROOT_DIR}/data PORT=${PORT} PUBLIC_BASE_URL=${PUBLIC_BASE_URL} bun bin/task-manager.js run --mode local --dir ${ROOT_DIR}"
-fi
+echo "ATM is installed."
+echo "Run app+worker: DATA_DIR=${ROOT_DIR}/data PORT=${PORT} PUBLIC_BASE_URL=${PUBLIC_BASE_URL} bun bin/task-manager.js run --dir ${ROOT_DIR}"

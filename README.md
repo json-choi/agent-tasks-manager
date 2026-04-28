@@ -52,7 +52,7 @@ agent-plugin/                       Hermes and OpenClaw plugin packages
 
 ```bash
 npm install -g agent-tasks-manager
-atm install --mode local --port 3011
+atm install --port 3011
 atm run
 ```
 
@@ -60,12 +60,6 @@ Open:
 
 ```text
 http://localhost:3011/setup
-```
-
-Docker is optional:
-
-```bash
-atm install --mode docker --port 3011
 ```
 
 Repository development:
@@ -84,7 +78,6 @@ DATA_DIR=./data
 PORT=3011
 PUBLIC_BASE_URL=http://localhost:3011
 BETTER_AUTH_SECRET=replace-with-a-random-secret-at-least-32-characters
-TASK_MANAGER_INSTALL_MODE=local
 ```
 
 Storage defaults to `./data`:
@@ -107,7 +100,7 @@ data/config/app.yml
 6. Review Slack permissions already owned by the agent.
 7. Optionally configure channel automation mode.
 
-Automatic plugin install only works for paths visible to the ATM process. If the agent runs elsewhere, mount the agent workspace into the ATM container or install the plugin manually.
+Automatic plugin install only works for paths visible to the ATM process. If the agent runs elsewhere, expose that workspace to the ATM host or install the plugin manually.
 
 ## Hook Points
 

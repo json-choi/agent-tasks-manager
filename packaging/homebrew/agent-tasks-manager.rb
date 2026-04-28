@@ -17,7 +17,7 @@ class AgentTasksManager < Formula
   end
 
   service do
-    run [opt_bin/"atm", "run", "--mode", "local", "--dir", var/"agent-tasks-manager"]
+    run [opt_bin/"atm", "run", "--dir", var/"agent-tasks-manager"]
     keep_alive true
     log_path var/"log/agent-tasks-manager.log"
     error_log_path var/"log/agent-tasks-manager.err.log"

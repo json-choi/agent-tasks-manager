@@ -41,11 +41,9 @@
     "LICENSE",
     "public/",
     "src/",
-    "Dockerfile",
     ".env.example",
     "README.md",
     "bun.lock",
-    "docker-compose.yml",
     "install.sh",
     "package.json",
     "tsconfig.json"

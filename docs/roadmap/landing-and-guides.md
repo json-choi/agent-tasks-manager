@@ -15,7 +15,7 @@ ATM intentionally keeps product storytelling out of the runtime dashboard. The a
 
 - Hermes plugin setup
 - OpenClaw skill setup
-- Docker workspace mounting
+- Remote agent workspace setup
 - GitHub issue sync
 - Writing a new agent adapter
 - Operating ATM in production
