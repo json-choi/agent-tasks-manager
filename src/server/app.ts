@@ -30,5 +30,5 @@ export async function createRuntime(overrides: Partial<AppConfig> = {}): Promise
     .use(integrationsController(context))
     .use(agentApiController(context));
 
-  return { app, config, store };
+  return { app, auth, config, store };
 }

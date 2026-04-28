@@ -28,6 +28,29 @@ const projectEntries = [
   "package.json",
   "tsconfig.json"
 ];
+const persistedEnvKeys = [
+  "GITHUB_TOKEN",
+  "GITHUB_WEBHOOK_SECRET",
+  "OPENCLAW_GITHUB_WEBHOOK_SECRET",
+  "TASK_MANAGER_BOOTSTRAP",
+  "TASK_MANAGER_BOOTSTRAP_ON_START",
+  "TASK_MANAGER_BOOTSTRAP_STRICT",
+  "TASK_MANAGER_ADMIN_EMAIL",
+  "TASK_MANAGER_ADMIN_PASSWORD",
+  "TASK_MANAGER_OPENCLAW_WORKSPACE",
+  "TASK_MANAGER_OPENCLAW_CLI",
+  "TASK_MANAGER_OPENCLAW_RUN_RELOAD",
+  "TASK_MANAGER_OPENCLAW_FORCE_INSTALL",
+  "TASK_MANAGER_OPENCLAW_REGENERATE_TOKEN",
+  "TASK_MANAGER_SLACK_PERMISSIONS_REVIEWED",
+  "TASK_MANAGER_PUBLIC_ACCESS_MODE",
+  "TASK_MANAGER_PUBLIC_URL",
+  "TASK_MANAGER_LOCAL_SERVICE_URL",
+  "TASK_MANAGER_CLOUDFLARE_TUNNEL_NAME",
+  "TASK_MANAGER_CLOUDFLARE_TUNNEL_TOKEN",
+  "TASK_MANAGER_CLOUDFLARE_INSTALL_COMMAND",
+  "TASK_MANAGER_PUBLIC_ACCESS_PROTECTED"
+];
 
 const [command = "help", ...args] = process.argv.slice(2);
 
@@ -110,6 +133,7 @@ async function buildInstallConfig(options) {
 
   return {
     authSecret,
+    envPatch: installEnvPatch(options, currentEnv),
     installDir,
     localBaseUrl,
     open: flagEnabled(options, "open"),
@@ -119,13 +143,14 @@ async function buildInstallConfig(options) {
 }
 
 function installProject(config, { printRunCommand }) {
-  const { authSecret, installDir, port, publicBaseUrl } = config;
+  const { authSecret, envPatch, installDir, port, publicBaseUrl } = config;
   copyProject(installDir);
   writeEnv(installDir, {
     DATA_DIR: path.join(installDir, "data"),
     PORT: port,
     PUBLIC_BASE_URL: publicBaseUrl,
-    BETTER_AUTH_SECRET: authSecret
+    BETTER_AUTH_SECRET: authSecret,
+    ...envPatch
   });
 
   requireCommand("bun", "Bun is required to install ATM.");
@@ -363,7 +388,9 @@ function help() {
 
 Usage:
   atm setup   [--dir PATH] [--port 3011|auto] [--public-url URL] [--open]
+              [--bootstrap --admin-email EMAIL --admin-password PASS --openclaw-workspace PATH]
   atm install [--dir PATH] [--port 3011|auto] [--public-url URL]
+              [--bootstrap --admin-email EMAIL --admin-password PASS --openclaw-workspace PATH]
   atm update  [--dir PATH] [--force]
   atm start   [--dir PATH] [--no-update]
   atm run     [--dir PATH] [--no-update]
@@ -411,6 +438,49 @@ function writeEnv(installDir, patch) {
     .map(([key, value]) => `${key}=${envValue(value)}`)
     .join("\n");
   writeFileSync(envPath, `${body}\n`);
+}
+
+function installEnvPatch(options, currentEnv) {
+  const patch = {};
+  const set = (key, value) => {
+    if (value === undefined || value === null || value === "") return;
+    patch[key] = value === true ? "true" : String(value);
+  };
+  const fromOptionOrEnv = (optionName, envName) => option(options, optionName, process.env[envName] ?? currentEnv[envName]);
+
+  for (const key of persistedEnvKeys) {
+    set(key, process.env[key] ?? currentEnv[key]);
+  }
+
+  set("TASK_MANAGER_ADMIN_EMAIL", fromOptionOrEnv("admin-email", "TASK_MANAGER_ADMIN_EMAIL"));
+  set("TASK_MANAGER_ADMIN_PASSWORD", fromOptionOrEnv("admin-password", "TASK_MANAGER_ADMIN_PASSWORD"));
+  set("TASK_MANAGER_OPENCLAW_WORKSPACE", fromOptionOrEnv("openclaw-workspace", "TASK_MANAGER_OPENCLAW_WORKSPACE"));
+  set("TASK_MANAGER_OPENCLAW_CLI", fromOptionOrEnv("openclaw-cli", "TASK_MANAGER_OPENCLAW_CLI"));
+  set("TASK_MANAGER_PUBLIC_ACCESS_MODE", fromOptionOrEnv("public-access-mode", "TASK_MANAGER_PUBLIC_ACCESS_MODE"));
+  set("TASK_MANAGER_PUBLIC_URL", fromOptionOrEnv("public-access-url", "TASK_MANAGER_PUBLIC_URL"));
+  set("TASK_MANAGER_LOCAL_SERVICE_URL", fromOptionOrEnv("local-service-url", "TASK_MANAGER_LOCAL_SERVICE_URL"));
+  set("TASK_MANAGER_CLOUDFLARE_TUNNEL_NAME", fromOptionOrEnv("cloudflare-tunnel-name", "TASK_MANAGER_CLOUDFLARE_TUNNEL_NAME"));
+  set("TASK_MANAGER_CLOUDFLARE_TUNNEL_TOKEN", fromOptionOrEnv("cloudflare-tunnel-token", "TASK_MANAGER_CLOUDFLARE_TUNNEL_TOKEN"));
+  set("GITHUB_TOKEN", fromOptionOrEnv("github-token", "GITHUB_TOKEN"));
+  set("GITHUB_WEBHOOK_SECRET", fromOptionOrEnv("github-webhook-secret", "GITHUB_WEBHOOK_SECRET"));
+
+  if (flagEnabled(options, "no-openclaw-reload")) set("TASK_MANAGER_OPENCLAW_RUN_RELOAD", "false");
+  if (flagEnabled(options, "openclaw-force-install")) set("TASK_MANAGER_OPENCLAW_FORCE_INSTALL", "true");
+  if (flagEnabled(options, "slack-reviewed")) set("TASK_MANAGER_SLACK_PERMISSIONS_REVIEWED", "true");
+
+  const bootstrapValue = option(options, "bootstrap", process.env.TASK_MANAGER_BOOTSTRAP ?? currentEnv.TASK_MANAGER_BOOTSTRAP);
+  if (bootstrapValue !== undefined) {
+    set("TASK_MANAGER_BOOTSTRAP", bootstrapValue);
+  } else if (
+    "admin-email" in options ||
+    "admin-password" in options ||
+    "openclaw-workspace" in options ||
+    process.env.TASK_MANAGER_BOOTSTRAP_ON_START
+  ) {
+    set("TASK_MANAGER_BOOTSTRAP", "true");
+  }
+
+  return patch;
 }
 
 function randomSecret() {

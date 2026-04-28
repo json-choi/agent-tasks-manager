@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntime } from "../src/server/app";
 import type { Runtime } from "../src/server/context";
+import { bootstrapFromEnv } from "../src/server/services/bootstrap.service";
 
 const runtimes: Runtime[] = [];
 const tempDirs: string[] = [];
@@ -816,6 +817,83 @@ describe("task-manager core", () => {
       delete process.env.TASK_MANAGER_OPENCLAW_WORKSPACE;
     }
   });
+
+  test("GitHub OpenClaw install guide supports pre-server install without secrets", async () => {
+    const guide = readFileSync(join(process.cwd(), "docs", "install", "openclaw-agent-install.md"), "utf8");
+    const manifest = JSON.parse(
+      readFileSync(join(process.cwd(), "docs", "install", "openclaw-agent-install.manifest.json"), "utf8")
+    );
+
+    expect(guide).toContain("before Agent Task Manager is running");
+    expect(guide).toContain("npx @jaesong/agent-task-manager setup");
+    expect(guide).toContain("Clean Uninstall Flow");
+    expect(guide).toContain("/api/setup/agent/uninstall");
+    expect(guide).toContain("atm uninstall");
+    expect(guide).toContain("gh auth login");
+    expect(guide).toContain("cloudflared tunnel login");
+    expect(guide).not.toContain("tmagt_");
+    expect(manifest.phase).toBe("pre-server");
+    expect(manifest.secretPolicy.agentToken).toContain("Do not ask");
+    expect(manifest.installCommand).toContain("--bootstrap");
+    expect(manifest.uninstall.preferred.apiCalls.some((step: { path?: string }) => step.path === "/api/setup/agent/uninstall")).toBe(true);
+    expect(manifest.uninstall.fileOnlyFallback.limitation).toContain("cannot revoke");
+    expect(manifest.forbiddenSlackOutputs).toContain("TASK_MANAGER_API_TOKEN");
+  });
+
+  test("bootstrap environment creates admin and installs OpenClaw skill idempotently", async () => {
+    const runtime = await makeRuntime();
+    const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-bootstrap-"));
+    tempDirs.push(workspacePath);
+
+    const first = await bootstrapFromEnv(runtime, {
+      TASK_MANAGER_BOOTSTRAP: "true",
+      TASK_MANAGER_ADMIN_EMAIL: "admin@example.com",
+      TASK_MANAGER_ADMIN_PASSWORD: "password123",
+      TASK_MANAGER_OPENCLAW_WORKSPACE: workspacePath,
+      TASK_MANAGER_OPENCLAW_RUN_RELOAD: "false",
+      TASK_MANAGER_SLACK_PERMISSIONS_REVIEWED: "true",
+      TASK_MANAGER_PUBLIC_ACCESS_MODE: "remote",
+      TASK_MANAGER_PUBLIC_URL: "https://tasks.example.com",
+      TASK_MANAGER_CLOUDFLARE_TUNNEL_TOKEN: "cloudflared service install cf_tunnel_token_bootstrap"
+    });
+
+    expect(first.ok).toBe(true);
+    expect(first.admin.status).toBe("created");
+    expect(first.openclaw.status).toBe("installed");
+    expect(runtime.store.isSetupLocked()).toBe(true);
+    expect(runtime.store.getSetupReviewSettings().slackPermissionsReviewedAt).toBeTruthy();
+    expect(runtime.store.getPublicAccessSettings().tunnelTokenPreview).toBe("cf_tunne...trap");
+
+    const envPath = join(workspacePath, "skills", "task-manager", "task-manager.env");
+    const env = readEnvFile(envPath);
+    expect(env.TASK_MANAGER_AGENT_ID).toBe(first.openclaw.agentId);
+    expect(env.TASK_MANAGER_API_TOKEN).toBeTruthy();
+    const agentId = env.TASK_MANAGER_AGENT_ID!;
+    const agentToken = env.TASK_MANAGER_API_TOKEN!;
+
+    const connect = await agentRequest(
+      runtime,
+      { id: agentId, token: agentToken },
+      "/api/agent/connect/test",
+      {
+        method: "POST",
+        body: { source: "bootstrap" }
+      }
+    );
+    expect(connect.status).toBe(200);
+
+    const second = await bootstrapFromEnv(runtime, {
+      TASK_MANAGER_BOOTSTRAP: "true",
+      TASK_MANAGER_OPENCLAW_WORKSPACE: workspacePath,
+      TASK_MANAGER_OPENCLAW_RUN_RELOAD: "false"
+    });
+    expect(second.ok).toBe(true);
+    expect(second.admin.status).toBe("existing");
+    expect(second.openclaw.status).toBe("existing");
+    expect(readFileSync(envPath, "utf8")).toBe(
+      Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n") + "\n"
+    );
+  });
 });
 
 async function makeRuntime(): Promise<Runtime> {
@@ -905,4 +983,16 @@ function restoreEnv(name: string, value: string | undefined): void {
     return;
   }
   process.env[name] = value;
+}
+
+function readEnvFile(path: string): Record<string, string> {
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .reduce<Record<string, string>>((env, line) => {
+      const index = line.indexOf("=");
+      if (index === -1) return env;
+      env[line.slice(0, index)] = line.slice(index + 1);
+      return env;
+    }, {});
 }

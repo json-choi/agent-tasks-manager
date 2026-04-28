@@ -7,6 +7,7 @@ import { jsonResponse, parseBearer } from "./shared/utils";
 
 export interface Runtime {
   app: AnyElysia;
+  auth: AuthService;
   config: AppConfig;
   store: TaskStore;
 }
