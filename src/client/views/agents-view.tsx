@@ -102,21 +102,15 @@ export function AgentsView({ api, refreshKey, search, t }: { api: ApiClient; ref
 
         <form key={editingAgent?.id || "new-agent"} className="settings-form" onSubmit={onSaveAgent}>
           <input type="hidden" name="id" defaultValue={editingAgent?.id || ""} />
+          <input type="hidden" name="type" value="openclaw" />
           <div className="form-grid">
-            <label htmlFor="agent-type">
-              {t("Type")}
-              <select id="agent-type" name="type" defaultValue={editingAgent?.type || "hermes"}>
-                <option value="hermes">hermes</option>
-                <option value="openclaw">openclaw</option>
-              </select>
-            </label>
             <label htmlFor="agent-name">
               {t("Name")}
               <input id="agent-name" name="name" defaultValue={editingAgent?.name || ""} placeholder={t("Agent name")} />
             </label>
             <label htmlFor="agent-cli-path">
               {t("CLI path")}
-              <input id="agent-cli-path" name="cliPath" defaultValue={editingAgent?.cliPath || ""} placeholder="hermes" />
+              <input id="agent-cli-path" name="cliPath" defaultValue={editingAgent?.cliPath || ""} placeholder="openclaw" />
             </label>
             <label htmlFor="agent-config-path">
               {t("Config path")}
@@ -124,7 +118,7 @@ export function AgentsView({ api, refreshKey, search, t }: { api: ApiClient; ref
             </label>
             <label htmlFor="agent-workspace-path">
               {t("Workspace path")}
-              <input id="agent-workspace-path" name="workspacePath" defaultValue={editingAgent?.workspacePath || ""} placeholder="/opt/agent" />
+              <input id="agent-workspace-path" name="workspacePath" defaultValue={editingAgent?.workspacePath || ""} placeholder="/opt/openclaw" />
             </label>
             <label className="check-row" htmlFor="agent-regenerate-token">
               <input id="agent-regenerate-token" name="regenerateToken" type="checkbox" />

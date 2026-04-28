@@ -81,17 +81,8 @@ export function setupPage(): string {
       </section>
 
       <form id="agent-form" class="panel setup-panel hidden" data-step-id="agent">
-        <h2>Agent Plugin</h2>
-        <div class="agent-choices" role="radiogroup" aria-label="Agent type">
-          <label class="agent-choice">
-            <input type="radio" name="type" value="hermes" checked>
-            <span>Hermes Agent</span>
-          </label>
-          <label class="agent-choice">
-            <input type="radio" name="type" value="openclaw">
-            <span>OpenClaw</span>
-          </label>
-        </div>
+        <h2>OpenClaw Integration</h2>
+        <input type="hidden" name="type" value="openclaw">
         <div id="workspace-status" class="detect-status">Create admin first, then workspace detection will run.</div>
         <label id="workspace-choice" class="hidden">Detected workspace
           <select id="workspace-select"></select>
@@ -101,10 +92,10 @@ export function setupPage(): string {
         <details class="advanced">
           <summary>Advanced diagnostics</summary>
           <div class="row">
-            <label>CLI path <input name="cliPath" placeholder="hermes"></label>
-            <label>Config path <input name="configPath" placeholder="/opt/hermes/config.yml"></label>
+            <label>CLI path <input name="cliPath" placeholder="openclaw"></label>
+            <label>Config path <input name="configPath" placeholder="/opt/openclaw/openclaw.yml"></label>
           </div>
-          <label>Manual workspace path <input id="manual-workspace" placeholder="/opt/hermes"></label>
+          <label>Manual workspace path <input id="manual-workspace" placeholder="/opt/openclaw"></label>
         </details>
         <div class="button-row">
           <button type="submit">Install Plugin</button>
@@ -241,7 +232,7 @@ export function setupPage(): string {
     const setupSteps = [
       { id: 'admin', label: 'Admin', summary: 'Create the local administrator.', required: true },
       { id: 'storage', label: 'Storage', summary: 'Confirm writable local paths.', required: true },
-      { id: 'agent', label: 'Agent Plugin', summary: 'Install Hermes or OpenClaw integration.', required: true },
+      { id: 'agent', label: 'OpenClaw', summary: 'Install the OpenClaw integration.', required: true },
       { id: 'public', label: 'Public Access', summary: 'Expose the dashboard through Cloudflare.', required: true },
       { id: 'permissions', label: 'Slack Review', summary: 'Confirm the existing bot permissions.', required: true },
       { id: 'automation', label: 'Automation', summary: 'Optional channel suggestion mode.', required: false },
@@ -406,8 +397,8 @@ export function setupPage(): string {
       if (id === 'agent') {
         const items = [];
         if (!state.token && status.setupLocked) items.push('Log in as admin before installing agent plugins.');
-        if (!(status.agents && status.agents.length)) items.push('Install at least one Hermes or OpenClaw plugin.');
-        return items.length ? items : ['Agent plugin is installed.'];
+        if (!(status.agents && status.agents.length)) items.push('Install OpenClaw before continuing.');
+        return items.length ? items : ['OpenClaw integration is installed.'];
       }
       if (id === 'public') {
         const publicAccess = status.publicAccess || {};
@@ -552,7 +543,7 @@ export function setupPage(): string {
     }
 
     function selectedAgentType() {
-      return document.querySelector('input[name="type"]:checked').value;
+      return 'openclaw';
     }
 
     async function detectWorkspace() {
@@ -734,10 +725,6 @@ export function setupPage(): string {
       } catch (error) {
         setResult('agent-result', error.message, false);
       }
-    });
-
-    document.querySelectorAll('input[name="type"]').forEach((node) => {
-      node.addEventListener('change', detectWorkspace);
     });
 
     $('permissions-form').addEventListener('submit', async (event) => {

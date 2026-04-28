@@ -22,7 +22,7 @@ export function settingsController({ config, store, requireAdmin }: ServerContex
 
       const input = asRecord(body);
       const type = parseAgentType(input.type);
-      if (!type) return jsonResponse({ error: "Agent type must be hermes or openclaw" }, 400);
+      if (!type) return jsonResponse({ error: "Agent type must be openclaw" }, 400);
 
       const upsertInput: UpsertAgentInput = { type };
       const id = stringValue(input.id);

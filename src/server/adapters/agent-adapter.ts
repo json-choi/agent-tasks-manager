@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { AgentSettings, AgentThreadContext, AgentType, Diagnostic, SlackAction, Task } from "../shared/types";
+import type { AgentSettings, AgentThreadContext, AgentType, Diagnostic, OwnerMapping, SlackAction, Task } from "../shared/types";
 import { compactText } from "../shared/utils";
 
 export interface AgentAdapter {
@@ -9,101 +9,9 @@ export interface AgentAdapter {
   captureThread(context: AgentThreadContext): SlackAction[];
   createTask(task: Task, duplicate?: boolean): SlackAction[];
   askAssignee(task: Task, assigneeId?: string | null): SlackAction[];
+  requestAssignment(task: Task, assignee: OwnerMapping, requestId: string, owners: OwnerMapping[]): SlackAction[];
   postTaskUpdate(task: Task, message?: string): SlackAction[];
   syncAgentRun(runId: string, task: Task): SlackAction[];
-}
-
-export class HermesAdapter implements AgentAdapter {
-  readonly type = "hermes" as const;
-
-  diagnose(settings: Partial<AgentSettings>): Diagnostic[] {
-    const cliPath = settings.cliPath ?? "";
-    return [
-      diagnoseCli("Hermes CLI", cliPath),
-      diagnosePath("Hermes config", settings.configPath),
-      {
-        ok: true,
-        label: "Slack mode",
-        message: "Verify the existing Hermes Slack manifest, Socket Mode, slash command, thread reply, and mention-gating settings in the Hermes workspace."
-      },
-      {
-        ok: true,
-        label: "Bot loop guard",
-        message: "Keep Hermes configured to ignore bot-origin messages and this Task Manager agent's own replies."
-      }
-    ];
-  }
-
-  installInstructions(settings: AgentSettings, apiBaseUrl: string, token?: string | null): string[] {
-    const pluginDir = settings.workspacePath
-      ? `${settings.workspacePath}/plugins/task-manager`
-      : "<hermes-workspace>/plugins/task-manager";
-    const sharedDir = settings.workspacePath
-      ? `${settings.workspacePath}/plugins/shared`
-      : "<hermes-workspace>/plugins/shared";
-    const cli = settings.cliPath || "hermes";
-    return [
-      `mkdir -p ${pluginDir}`,
-      `cp -R agent-plugin/hermes/* ${pluginDir}/`,
-      `mkdir -p ${sharedDir}`,
-      `cp -R agent-plugin/shared/* ${sharedDir}/`,
-      `printf '%s\n' 'TASK_MANAGER_API_URL=${apiBaseUrl}' 'TASK_MANAGER_AGENT_ID=${settings.id}' 'TASK_MANAGER_API_TOKEN=${token ?? "<token shown once>"}' > ${pluginDir}/task-manager.env`,
-      `${cli} plugin enable task-manager`,
-    ];
-  }
-
-  captureThread(context: AgentThreadContext): SlackAction[] {
-    return [
-      {
-        kind: "thread_reply",
-        channelId: context.channelId ?? null,
-        threadTs: context.threadTs ?? null,
-        text: "Thread context captured. I can turn this into a task when you confirm."
-      }
-    ];
-  }
-
-  createTask(task: Task, duplicate = false): SlackAction[] {
-    return [
-      {
-        kind: "thread_reply",
-        channelId: task.channelId,
-        threadTs: task.threadTs,
-        text: duplicate
-          ? `This thread is already tracked as ${task.id}: ${task.title}`
-          : `Proposed task ${task.id}: ${task.title}`
-      }
-    ];
-  }
-
-  askAssignee(task: Task, assigneeId?: string | null): SlackAction[] {
-    const text = assigneeId
-      ? `<@${assigneeId}> can you take ${task.id}: ${task.title}?`
-      : `Who should own ${task.id}: ${task.title}?`;
-    return [{ kind: "thread_reply", channelId: task.channelId, threadTs: task.threadTs, text }];
-  }
-
-  postTaskUpdate(task: Task, message?: string): SlackAction[] {
-    return [
-      {
-        kind: "thread_reply",
-        channelId: task.channelId,
-        threadTs: task.threadTs,
-        text: message ?? `${task.id} is now ${task.status}.`
-      }
-    ];
-  }
-
-  syncAgentRun(runId: string, task: Task): SlackAction[] {
-    return [
-      {
-        kind: "thread_reply",
-        channelId: task.channelId,
-        threadTs: task.threadTs,
-        text: `Linked agent run ${runId} to ${task.id}.`
-      }
-    ];
-  }
 }
 
 export class OpenClawAdapter implements AgentAdapter {
@@ -142,6 +50,7 @@ export class OpenClawAdapter implements AgentAdapter {
       `mkdir -p ${sharedDir}`,
       `cp -R agent-plugin/shared/* ${sharedDir}/`,
       `printf '%s\n' 'TASK_MANAGER_API_URL=${apiBaseUrl}' 'TASK_MANAGER_AGENT_ID=${settings.id}' 'TASK_MANAGER_API_TOKEN=${token ?? "<token shown once>"}' > ${skillDir}/task-manager.env`,
+      `cat > ${skillDir}/openclaw-task-manager.json <<'JSON'\n${JSON.stringify(openClawInstallManifest(apiBaseUrl), null, 2)}\nJSON`,
       `${cli} skills reload`
     ];
   }
@@ -184,6 +93,76 @@ export class OpenClawAdapter implements AgentAdapter {
     ];
   }
 
+  requestAssignment(task: Task, assignee: OwnerMapping, requestId: string, owners: OwnerMapping[]): SlackAction[] {
+    const ownerOptions = owners
+      .filter((owner) => owner.active && owner.slackUserId && owner.id !== assignee.id)
+      .slice(0, 25)
+      .map((owner) => ({
+        text: { type: "plain_text", text: owner.ownerName },
+        value: owner.id
+      }));
+    const actionElements: unknown[] = [
+      {
+        type: "button",
+        text: { type: "plain_text", text: "Accept" },
+        style: "primary",
+        action_id: "atm_assignment_accept",
+        value: requestId
+      },
+      {
+        type: "button",
+        text: { type: "plain_text", text: "Decline" },
+        style: "danger",
+        action_id: "atm_assignment_decline",
+        value: requestId
+      }
+    ];
+    if (ownerOptions.length > 0) {
+      actionElements.unshift({
+        type: "static_select",
+        action_id: "atm_assignment_delegate_select",
+        placeholder: { type: "plain_text", text: "Delegate to" },
+        options: ownerOptions
+      });
+    }
+
+    const blocks: unknown[] = [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${task.title}*\n${compactText(task.description || task.nextAction || "No description provided.", 220)}`
+        }
+      },
+      {
+        type: "context",
+        elements: [
+          { type: "mrkdwn", text: `${task.id} · ${task.priority}/${task.status}` },
+          { type: "mrkdwn", text: task.nextAction ? `Next: ${task.nextAction}` : "Please confirm ownership." }
+        ]
+      },
+      {
+        type: "actions",
+        block_id: `atm_assignment_${requestId}`,
+        elements: actionElements
+      }
+    ];
+
+    return [
+      {
+        kind: "dm",
+        userId: assignee.slackUserId,
+        text: `Can you take ${task.id}: ${task.title}?`,
+        blocks,
+        metadata: {
+          type: "atm.assignment_request",
+          requestId,
+          taskId: task.id
+        }
+      }
+    ];
+  }
+
   postTaskUpdate(task: Task, message?: string): SlackAction[] {
     return [
       {
@@ -208,7 +187,10 @@ export class OpenClawAdapter implements AgentAdapter {
 }
 
 export function adapterFor(type: AgentType): AgentAdapter {
-  return type === "hermes" ? new HermesAdapter() : new OpenClawAdapter();
+  if (type !== "openclaw") {
+    throw new Error(`Unsupported agent type: ${type}`);
+  }
+  return new OpenClawAdapter();
 }
 
 function diagnosePath(label: string, value?: string | null): Diagnostic {
@@ -238,4 +220,19 @@ function diagnoseCli(label: string, value: string): Diagnostic {
   }
 
   return { ok: false, label, message: `${value} was not found in PATH.` };
+}
+
+function openClawInstallManifest(apiBaseUrl: string) {
+  return {
+    name: "task-manager",
+    runtime: "openclaw",
+    apiBaseUrl,
+    skill: "./task-manager-skill.ts",
+    env: "./task-manager.env",
+    handlers: {
+      slackMessage: "handleMessage",
+      slackInteraction: "handleInteraction",
+      scheduledOutbox: "pollOutbox"
+    }
+  };
 }

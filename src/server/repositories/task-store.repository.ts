@@ -5,6 +5,8 @@ import type {
   AgentSettings,
   AgentThreadContext,
   AgentType,
+  AssignmentRequest,
+  AssignmentRequestStatus,
   ChannelMode,
   ChannelPolicy,
   GitHubSettings,
@@ -117,6 +119,25 @@ interface OutboxRow {
   acked_at: string | null;
 }
 
+interface AssignmentRequestRow {
+  id: string;
+  task_id: string;
+  agent_id: string | null;
+  owner_id: string | null;
+  owner_name: string | null;
+  slack_user_id: string | null;
+  status: AssignmentRequestStatus;
+  round: number;
+  previous_request_id: string | null;
+  requested_by: string | null;
+  response_text: string | null;
+  slack_message_ts: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  responded_at: string | null;
+}
+
 interface RuntimeSettingRow {
   key: string;
   payload: string;
@@ -168,6 +189,15 @@ export interface UpsertOwnerInput {
   slackUserId?: string | null;
   aliases?: string[];
   active?: boolean;
+}
+
+export interface CreateAssignmentRequestInput {
+  taskId: string;
+  agentId?: string | null;
+  owner: OwnerMapping;
+  previousRequestId?: string | null;
+  requestedBy?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface SlackDigestMessageInput {
@@ -626,6 +656,85 @@ export class TaskStore {
       .query("UPDATE outbox SET status = 'acked', acked_at = ? WHERE id = ? AND agent_id = ?")
       .run(nowIso(), id, agentId);
     return this.getOutboxItem(id);
+  }
+
+  createAssignmentRequest(input: CreateAssignmentRequestInput): AssignmentRequest {
+    const id = newId("asn");
+    const now = nowIso();
+    const previous = input.previousRequestId ? this.getAssignmentRequest(input.previousRequestId) : null;
+    const round = previous ? previous.round + 1 : 1;
+    this.db
+      .query(
+        `INSERT INTO assignment_requests
+         (id, task_id, agent_id, owner_id, owner_name, slack_user_id, status, round,
+          previous_request_id, requested_by, response_text, slack_message_ts, expires_at,
+          created_at, updated_at, responded_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NULL, NULL, ?, ?, ?, NULL)`
+      )
+      .run(
+        id,
+        input.taskId,
+        input.agentId ?? null,
+        input.owner.id,
+        input.owner.ownerName,
+        input.owner.slackUserId,
+        round,
+        input.previousRequestId ?? null,
+        input.requestedBy ?? null,
+        input.expiresAt ?? null,
+        now,
+        now
+      );
+    const request = this.getAssignmentRequest(id);
+    if (!request) throw new Error("Assignment request create failed");
+    this.audit("assignment.requested", { id, taskId: input.taskId, ownerName: input.owner.ownerName });
+    return request;
+  }
+
+  getAssignmentRequest(id: string): AssignmentRequest | null {
+    const row = this.db.query("SELECT * FROM assignment_requests WHERE id = ?").get(id) as AssignmentRequestRow | null;
+    return row ? assignmentRequestFromRow(row) : null;
+  }
+
+  updateAssignmentRequest(
+    id: string,
+    input: {
+      status?: AssignmentRequestStatus;
+      responseText?: string | null;
+      slackMessageTs?: string | null;
+      respondedAt?: string | null;
+    }
+  ): AssignmentRequest | null {
+    const existing = this.getAssignmentRequest(id);
+    if (!existing) return null;
+    const status = input.status ?? existing.status;
+    const now = nowIso();
+    const respondedAt = input.respondedAt === undefined
+      ? existing.respondedAt ?? (status !== "pending" ? now : null)
+      : input.respondedAt;
+    this.db
+      .query(
+        `UPDATE assignment_requests
+         SET status = ?, response_text = ?, slack_message_ts = ?, updated_at = ?, responded_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        status,
+        input.responseText === undefined ? existing.responseText : input.responseText,
+        input.slackMessageTs === undefined ? existing.slackMessageTs : input.slackMessageTs,
+        now,
+        respondedAt,
+        id
+      );
+    return this.getAssignmentRequest(id);
+  }
+
+  getPendingAssignmentRequestsOlderThan(minutes: number): AssignmentRequest[] {
+    const threshold = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+    const rows = this.db
+      .query("SELECT * FROM assignment_requests WHERE status = 'pending' AND updated_at < ? ORDER BY updated_at ASC")
+      .all(threshold) as AssignmentRequestRow[];
+    return rows.map(assignmentRequestFromRow);
   }
 
   getOpenAssignmentsOlderThan(minutes: number): Task[] {
@@ -1180,6 +1289,7 @@ public_access:
         updated_at TEXT NOT NULL
       )
     `);
+    this.db.run("DELETE FROM agents WHERE type <> 'openclaw'");
     this.db.run(`
       CREATE TABLE IF NOT EXISTS channel_policies (
         channel_id TEXT PRIMARY KEY,
@@ -1278,6 +1388,29 @@ public_access:
         created_at TEXT NOT NULL,
         committed_at TEXT,
         FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS assignment_requests (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        agent_id TEXT,
+        owner_id TEXT,
+        owner_name TEXT,
+        slack_user_id TEXT,
+        status TEXT NOT NULL,
+        round INTEGER NOT NULL,
+        previous_request_id TEXT,
+        requested_by TEXT,
+        response_text TEXT,
+        slack_message_ts TEXT,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        responded_at TEXT,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+        FOREIGN KEY (owner_id) REFERENCES owner_mappings(id) ON DELETE SET NULL
       )
     `);
     this.db.run(`
@@ -1428,8 +1561,32 @@ function outboxFromRow(row: OutboxRow): OutboxItem {
   };
 }
 
+function assignmentRequestFromRow(row: AssignmentRequestRow): AssignmentRequest {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    agentId: row.agent_id,
+    ownerId: row.owner_id,
+    ownerName: row.owner_name,
+    slackUserId: row.slack_user_id,
+    status: row.status,
+    round: row.round,
+    previousRequestId: row.previous_request_id,
+    requestedBy: row.requested_by,
+    responseText: row.response_text,
+    slackMessageTs: row.slack_message_ts,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    respondedAt: row.responded_at
+  };
+}
+
 function defaultAgentName(type: AgentType): string {
-  return type === "hermes" ? "Hermes Agent" : "OpenClaw";
+  if (type !== "openclaw") {
+    throw new Error(`Unsupported agent type: ${type}`);
+  }
+  return "OpenClaw";
 }
 
 function renderTaskMarkdown(task: Task): string {

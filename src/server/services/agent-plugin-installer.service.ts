@@ -30,7 +30,9 @@ export interface AgentInstallResult {
   pluginPath: string;
   sharedPath: string;
   envPath: string;
+  manifestPath: string;
   copied: string[];
+  removedLegacy: string[];
   env: string[];
   reload: {
     ran: boolean;
@@ -57,7 +59,9 @@ export interface AgentUninstallResult {
   pluginPath: string;
   sharedPath: string;
   envPath: string;
+  manifestPath: string;
   removed: string[];
+  removedLegacy: string[];
   retained: string[];
   reload: {
     ran: boolean;
@@ -148,6 +152,7 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
   mkdirSync(layout.basePath, { recursive: true });
   cpSync(sourceDir, layout.pluginPath, { recursive: true, force: true });
   cpSync(sharedSourceDir, layout.sharedPath, { recursive: true, force: true });
+  const removedLegacy = removeLegacyAgentPlugin(input.workspacePath);
 
   const env = [
     `TASK_MANAGER_API_URL=${input.apiBaseUrl}`,
@@ -155,6 +160,9 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
     `TASK_MANAGER_API_TOKEN=${input.token}`
   ];
   writeFileSync(layout.envPath, `${env.join("\n")}\n`, { mode: 0o600 });
+  writeFileSync(layout.manifestPath, JSON.stringify(openClawIntegrationManifest(input.apiBaseUrl), null, 2) + "\n", {
+    mode: 0o600
+  });
 
   const reloadCommand = reloadCommandFor(input.agent.type, input.cliPath, "install");
   const reload = input.runReload === false ? skippedReload(reloadCommand) : runReload(reloadCommand);
@@ -175,6 +183,31 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
       message: layout.envPath
     },
     {
+      ok: existsSync(layout.manifestPath),
+      label: "OpenClaw integration manifest",
+      message: layout.manifestPath
+    },
+    {
+      ok: true,
+      label: "Legacy plugin",
+      message: removedLegacy.length ? `Removed ${removedLegacy.join(", ")}.` : "No legacy plugin files found."
+    },
+    {
+      ok: true,
+      label: "Message route",
+      message: "OpenClaw must call task-manager.handleMessage for Slack message events."
+    },
+    {
+      ok: true,
+      label: "Interaction route",
+      message: "OpenClaw must call task-manager.handleInteraction for Slack block actions."
+    },
+    {
+      ok: true,
+      label: "Outbox worker",
+      message: "OpenClaw must call task-manager.pollOutbox on a short schedule to deliver DMs and thread updates."
+    },
+    {
       ok: reload.ran ? reload.ok : true,
       label: "Reload",
       message: reload.ran
@@ -192,7 +225,9 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
     pluginPath: layout.pluginPath,
     sharedPath: layout.sharedPath,
     envPath: layout.envPath,
-    copied: [layout.pluginPath, layout.sharedPath],
+    manifestPath: layout.manifestPath,
+    copied: [layout.pluginPath, layout.sharedPath, layout.manifestPath],
+    removedLegacy,
     env,
     reload,
     diagnostics
@@ -203,6 +238,7 @@ export function uninstallAgentPlugin(input: AgentUninstallInput): AgentUninstall
   const layout = pluginLayout(input.type, input.workspacePath);
   const sharedClientPath = join(layout.sharedPath, "task-manager-client.ts");
   const removed: string[] = [];
+  const removedLegacy: string[] = [];
   const retained: string[] = [];
 
   if (existsSync(layout.pluginPath)) {
@@ -239,6 +275,11 @@ export function uninstallAgentPlugin(input: AgentUninstallInput): AgentUninstall
       message: !existsSync(layout.envPath) ? "Removed." : `${layout.envPath} still exists.`
     },
     {
+      ok: !existsSync(layout.manifestPath),
+      label: "OpenClaw integration manifest",
+      message: !existsSync(layout.manifestPath) ? "Removed." : `${layout.manifestPath} still exists.`
+    },
+    {
       ok: !existsSync(sharedClientPath),
       label: "Shared client",
       message: !existsSync(sharedClientPath) ? "Removed." : `${sharedClientPath} still exists.`
@@ -261,7 +302,9 @@ export function uninstallAgentPlugin(input: AgentUninstallInput): AgentUninstall
     pluginPath: layout.pluginPath,
     sharedPath: layout.sharedPath,
     envPath: layout.envPath,
+    manifestPath: layout.manifestPath,
     removed,
+    removedLegacy,
     retained,
     reload,
     diagnostics
@@ -269,55 +312,33 @@ export function uninstallAgentPlugin(input: AgentUninstallInput): AgentUninstall
 }
 
 function envKeysFor(type: AgentType): string[] {
-  return type === "hermes"
-    ? [
-        "TASK_MANAGER_HERMES_WORKSPACE",
-        "HERMES_WORKSPACE",
-        "HERMES_HOME",
-        "HERMES_AGENT_HOME",
-        "HERMES_CONFIG"
-      ]
-    : [
-        "TASK_MANAGER_OPENCLAW_WORKSPACE",
-        "OPENCLAW_WORKSPACE",
-        "OPENCLAW_HOME",
-        "OPENCLAW_AGENT_HOME",
-        "OPENCLAW_CONFIG"
-      ];
+  assertOpenClaw(type);
+  return [
+    "TASK_MANAGER_OPENCLAW_WORKSPACE",
+    "OPENCLAW_WORKSPACE",
+    "OPENCLAW_HOME",
+    "OPENCLAW_AGENT_HOME",
+    "OPENCLAW_CONFIG"
+  ];
 }
 
 function commonWorkspacePaths(type: AgentType): string[] {
+  assertOpenClaw(type);
   const home = homedir();
-  return type === "hermes"
-    ? [
-        join(home, ".hermes"),
-        join(home, ".config", "hermes"),
-        join(home, "hermes"),
-        join(home, "Hermes"),
-        join(home, "hermes-agent"),
-        "/agent-workspaces/hermes",
-        "/agent-workspaces/Hermes",
-        "/mnt/agent-workspaces/hermes",
-        "/workspaces/hermes",
-        "/opt/hermes",
-        "/srv/hermes",
-        "/var/lib/hermes",
-        "/usr/local/hermes"
-      ]
-    : [
-        join(home, ".openclaw"),
-        join(home, ".config", "openclaw"),
-        join(home, "openclaw"),
-        join(home, "OpenClaw"),
-        "/agent-workspaces/openclaw",
-        "/agent-workspaces/OpenClaw",
-        "/mnt/agent-workspaces/openclaw",
-        "/workspaces/openclaw",
-        "/opt/openclaw",
-        "/srv/openclaw",
-        "/var/lib/openclaw",
-        "/usr/local/openclaw"
-      ];
+  return [
+    join(home, ".openclaw"),
+    join(home, ".config", "openclaw"),
+    join(home, "openclaw"),
+    join(home, "OpenClaw"),
+    "/agent-workspaces/openclaw",
+    "/agent-workspaces/OpenClaw",
+    "/mnt/agent-workspaces/openclaw",
+    "/workspaces/openclaw",
+    "/opt/openclaw",
+    "/srv/openclaw",
+    "/var/lib/openclaw",
+    "/usr/local/openclaw"
+  ];
 }
 
 function scoreWorkspaceCandidate(
@@ -341,10 +362,11 @@ function scoreWorkspaceCandidate(
     reasons.push("Directory is writable.");
   }
 
-  const pluginParent = type === "hermes" ? join(path, "plugins") : join(path, "skills");
+  assertOpenClaw(type);
+  const pluginParent = join(path, "skills");
   if (directoryExists(pluginParent)) {
     score += 20;
-    reasons.push(type === "hermes" ? "Contains a plugins directory." : "Contains a skills directory.");
+    reasons.push("Contains a skills directory.");
   }
 
   for (const configName of configNamesFor(type)) {
@@ -370,9 +392,8 @@ function scoreWorkspaceCandidate(
 }
 
 function configNamesFor(type: AgentType): string[] {
-  return type === "hermes"
-    ? ["hermes.yml", "hermes.yaml", "config.yml", "config.yaml", ".env"]
-    : ["openclaw.yml", "openclaw.yaml", "config.yml", "config.yaml", ".env"];
+  assertOpenClaw(type);
+  return ["openclaw.yml", "openclaw.yaml", "config.yml", "config.yaml", ".env"];
 }
 
 function directoryExists(path: string): boolean {
@@ -393,13 +414,40 @@ function isWritable(path: string): boolean {
 }
 
 function pluginLayout(type: AgentType, workspacePath: string) {
-  const basePath = type === "hermes" ? join(workspacePath, "plugins") : join(workspacePath, "skills");
+  assertOpenClaw(type);
+  const basePath = join(workspacePath, "skills");
   return {
     basePath,
     pluginPath: join(basePath, "task-manager"),
     sharedPath: join(basePath, "shared"),
-    envPath: join(basePath, "task-manager", "task-manager.env")
+    envPath: join(basePath, "task-manager", "task-manager.env"),
+    manifestPath: join(basePath, "task-manager", "openclaw-task-manager.json")
   };
+}
+
+function removeLegacyAgentPlugin(workspacePath: string): string[] {
+  const removed: string[] = [];
+  const legacyPluginPath = join(workspacePath, "plugins", "task-manager");
+  const legacyPluginMarker = join(legacyPluginPath, "task-manager-plugin.ts");
+  const legacySharedPath = join(workspacePath, "plugins", "shared");
+  const legacySharedClientPath = join(legacySharedPath, "task-manager-client.ts");
+
+  if (existsSync(legacyPluginMarker)) {
+    rmSync(legacyPluginPath, { recursive: true, force: true });
+    removed.push(legacyPluginPath);
+  }
+
+  if (existsSync(legacySharedClientPath)) {
+    rmSync(legacySharedClientPath, { force: true });
+    removed.push(legacySharedClientPath);
+  }
+
+  if (directoryExists(legacySharedPath) && readdirSync(legacySharedPath).length === 0) {
+    rmSync(legacySharedPath, { recursive: true, force: true });
+    removed.push(legacySharedPath);
+  }
+
+  return removed;
 }
 
 function reloadCommandFor(
@@ -407,12 +455,44 @@ function reloadCommandFor(
   cliPath?: string | null,
   action: "install" | "uninstall" = "install"
 ): string[] {
-  const cli = cliPath?.trim() || (type === "hermes" ? "hermes" : "openclaw");
-  if (type === "hermes") {
-    return [cli, "plugin", action === "install" ? "enable" : "disable", "task-manager"];
-  }
-
+  assertOpenClaw(type);
+  const cli = cliPath?.trim() || "openclaw";
   return [cli, "skills", "reload"];
+}
+
+function openClawIntegrationManifest(apiBaseUrl: string) {
+  return {
+    name: "task-manager",
+    runtime: "openclaw",
+    apiBaseUrl,
+    skill: "./task-manager-skill.ts",
+    env: "./task-manager.env",
+    handlers: {
+      slackMessage: "handleMessage",
+      slackInteraction: "handleInteraction",
+      scheduledOutbox: "pollOutbox"
+    },
+    requiredSlackCapabilities: [
+      "read channel messages",
+      "read thread replies",
+      "post thread replies",
+      "send DMs",
+      "receive block action interactions"
+    ],
+    smokeTests: [
+      "connect-test",
+      "thread-reply-action",
+      "dm-assignment-action",
+      "interaction-forwarding",
+      "outbox-polling"
+    ]
+  };
+}
+
+function assertOpenClaw(type: AgentType): void {
+  if (type !== "openclaw") {
+    throw new Error(`Only OpenClaw is supported. Received: ${type}`);
+  }
 }
 
 function skippedReload(command: string[]) {

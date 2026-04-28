@@ -19,7 +19,7 @@ export type Task = {
 
 export type Agent = {
   id: string;
-  type: "hermes" | "openclaw";
+  type: "openclaw";
   name: string;
   apiTokenPreview?: string | null;
   cliPath?: string | null;

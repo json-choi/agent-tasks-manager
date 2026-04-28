@@ -2,7 +2,7 @@
 
 Agent Task Manager, or ATM, is a self-hosted task layer for teams that already run an agent in Slack.
 
-ATM does not add another Slack bot. Your existing Hermes/OpenClaw-style agent keeps Slack Socket Mode, message reads, thread replies, and DMs. ATM stores task state, serves the dashboard, manages plugin credentials, and returns Slack actions for the agent to execute.
+ATM does not add another Slack bot. Your existing OpenClaw agent keeps Slack Socket Mode, message reads, thread replies, DMs, and interactions. ATM stores task state, serves the dashboard, manages OpenClaw credentials, and returns Slack actions for OpenClaw to execute.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ ATM does not add another Slack bot. Your existing Hermes/OpenClaw-style agent ke
 - Creates task proposals from explicit commands or low-token digest candidates.
 - Stores tasks as Markdown files with a SQLite index.
 - Supports owner mapping, assignment prompts, stale task checks, and daily digests.
-- Installs and uninstalls Hermes/OpenClaw plugins from the setup flow.
+- Installs and uninstalls the OpenClaw integration from the setup flow.
 - Uses Better Auth-backed admin sessions.
 - Classifies coding tasks and optionally creates linked GitHub issues.
 - Syncs linked task status from GitHub issue webhooks.
@@ -48,7 +48,7 @@ src/server/shared/*                 shared types, parsers, and HTTP utilities
 src/client/dashboard.ts             dashboard source
 public/                             static dashboard shell
 src/worker/index.ts                 background worker process
-agent-plugin/                       Hermes and OpenClaw plugin packages
+agent-plugin/                       OpenClaw integration package
 ```
 
 ## Quick Start
@@ -121,7 +121,7 @@ data/config/app.yml
 
 1. Create the first admin.
 2. Verify local storage.
-3. Select Hermes Agent or OpenClaw.
+3. Connect OpenClaw.
 4. Let ATM detect a local or mounted agent workspace.
 5. Install the plugin and run a connection smoke test.
 6. Review Slack permissions already owned by the agent.
@@ -133,15 +133,18 @@ Automatic plugin install only works for paths visible to the ATM process. If the
 
 ATM is intentionally small around a few extension points.
 
-### Agent Plugins
+### OpenClaw Integration
 
-Use `agent-plugin/hermes` or `agent-plugin/openclaw` as the reference package. Plugins send Slack context to ATM and execute the returned Slack actions.
+Use `agent-plugin/openclaw` as the reference package. OpenClaw sends Slack context and interaction payloads to ATM, polls the outbox, and executes the returned Slack actions.
 
 Primary agent endpoints:
 
 - `POST /api/agent/connect/test`
 - `POST /api/agent/thread/capture`
 - `POST /api/agent/task/propose`
+- `POST /api/agent/task/:id/assignment-request`
+- `POST /api/agent/slack/interaction`
+- `GET /api/agent/owners`
 - `POST /api/agent/slack/digest/collect`
 - `POST /api/agent/slack/digest/commit`
 - `GET /api/agent/tasks/cards`
@@ -151,9 +154,9 @@ Primary agent endpoints:
 - `GET /api/agent/outbox`
 - `POST /api/agent/outbox/:id/ack`
 
-### Agent Adapters
+### OpenClaw Adapter
 
-Add or adjust agent-specific Slack action behavior in:
+Add or adjust OpenClaw Slack action behavior in:
 
 ```text
 src/server/adapters/agent-adapter.ts
@@ -164,6 +167,7 @@ The adapter contract covers:
 - `captureThread`
 - `createTask`
 - `askAssignee`
+- `requestAssignment`
 - `postTaskUpdate`
 - `syncAgentRun`
 
@@ -204,7 +208,7 @@ src/worker/index.ts
 
 Current jobs:
 
-- mark stale assignment requests as blocked
+- expire stale assignment requests and block stale assignments
 - move stale in-progress tasks to review
 - enqueue optional daily digests
 

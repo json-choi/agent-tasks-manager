@@ -105,7 +105,7 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
       if ("response" in auth) return auth.response;
 
       const type = parseAgentType(query.type);
-      if (!type) return jsonResponse({ error: "Agent type must be hermes or openclaw" }, 400);
+      if (!type) return jsonResponse({ error: "Agent type must be openclaw" }, 400);
 
       const savedPaths = store
         .listAgents()
@@ -127,7 +127,7 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
 
       const input = asRecord(body);
       const type = parseAgentType(input.type);
-      if (!type) return jsonResponse({ error: "Agent type must be hermes or openclaw" }, 400);
+      if (!type) return jsonResponse({ error: "Agent type must be openclaw" }, 400);
 
       const savedPaths = store
         .listAgents()
@@ -212,7 +212,7 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
       const explicitType = parseAgentType(input.type);
       const existing = id ? store.getAgent(id) : null;
       const type = existing?.type ?? explicitType;
-      if (!type) return jsonResponse({ error: "Agent type must be hermes or openclaw" }, 400);
+      if (!type) return jsonResponse({ error: "Agent type must be openclaw" }, 400);
 
       const matchingAgents = store.listAgents().filter((agent) => agent.type === type);
       const targetAgent = existing ?? matchingAgents.at(-1) ?? null;

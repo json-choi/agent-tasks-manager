@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntime } from "../src/server/app";
@@ -165,13 +165,23 @@ describe("task-manager core", () => {
   test("agent token flow proposes once per Slack thread and processes assignment/status", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "hermes");
+    const agent = await createAgent(runtime, adminToken, "openclaw");
 
     const connect = await agentRequest(runtime, agent, "/api/agent/connect/test", {
       method: "POST",
       body: { source: "test" }
     });
     expect(connect.status).toBe(200);
+
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Deploy Owner",
+        slackUserId: "U222",
+        aliases: ["deploy"]
+      }
+    });
 
     const context = {
       channelId: "C123",
@@ -204,9 +214,13 @@ describe("task-manager core", () => {
       method: "POST",
       body: { assigneeId: "U222" }
     });
+    expect(ask.status).toBe(200);
     const askBody = await ask.json();
     expect(askBody.task.status).toBe("assigning");
-    expect(askBody.actions[0].text).toContain("U222");
+    expect(askBody.assignmentRequest.status).toBe("pending");
+    expect(askBody.actions[0].kind).toBe("dm");
+    expect(askBody.actions[0].userId).toBe("U222");
+    expect(askBody.actions[0].blocks).toBeTruthy();
 
     const accepted = await agentRequest(
       runtime,
@@ -214,7 +228,7 @@ describe("task-manager core", () => {
       `/api/agent/task/${proposedBody.task.id}/assignment-response`,
       {
         method: "POST",
-        body: { accepted: true, assigneeId: "U222" }
+        body: { accepted: true, requestId: askBody.assignmentRequest.id }
       }
     );
     const acceptedBody = await accepted.json();
@@ -285,7 +299,7 @@ describe("task-manager core", () => {
   test("owner mappings drive task cards and queued daily digests", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "hermes");
+    const agent = await createAgent(runtime, adminToken, "openclaw");
 
     const owner = await request(runtime, "/api/settings/owners", {
       method: "POST",
@@ -299,6 +313,12 @@ describe("task-manager core", () => {
     expect(owner.status).toBe(200);
     const ownerBody = await owner.json();
     expect(ownerBody.owner.ownerName).toBe("Alice");
+
+    const agentOwners = await agentRequest(runtime, agent, "/api/agent/owners");
+    expect(agentOwners.status).toBe(200);
+    const agentOwnersBody = await agentOwners.json();
+    expect(agentOwnersBody.owners).toHaveLength(1);
+    expect(agentOwnersBody.owners[0].slackUserId).toBe("U222");
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
@@ -340,6 +360,92 @@ describe("task-manager core", () => {
     const outbox = await agentRequest(runtime, agent, "/api/agent/outbox");
     const outboxBody = await outbox.json();
     expect(outboxBody.outbox[0].payload.actions[0].userId).toBe("U222");
+  });
+
+  test("OpenClaw assignment interactions can delegate and then accept ownership", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminToken, "openclaw");
+
+    const alice = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Alice",
+        slackUserId: "U_ALICE",
+        aliases: ["alice"]
+      }
+    });
+    const aliceBody = await alice.json();
+    const bob = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Bob",
+        slackUserId: "U_BOB",
+        aliases: ["bob"]
+      }
+    });
+    const bobBody = await bob.json();
+
+    const proposed = await agentRequest(runtime, agent, "/api/agent/task/propose", {
+      method: "POST",
+      body: {
+        title: "Fix assignment interaction",
+        description: "Make ownership confirmation interactive.",
+        assignee: "Alice",
+        confirmed: true,
+        context: {
+          channelId: "C_ASSIGN",
+          threadTs: "1710000000.000500",
+          messageTs: "1710000000.000500",
+          authorId: "U_REPORTER",
+          messages: [{ userId: "U_REPORTER", text: "Alice should own this." }]
+        }
+      }
+    });
+    expect(proposed.status).toBe(200);
+    const proposedBody = await proposed.json();
+    expect(proposedBody.task.status).toBe("assigning");
+    expect(proposedBody.task.assignee).toBe("Alice");
+    expect(proposedBody.assignmentRequest.ownerId).toBe(aliceBody.owner.id);
+    expect(proposedBody.actions.at(-1).kind).toBe("dm");
+    expect(proposedBody.actions.at(-1).userId).toBe("U_ALICE");
+
+    const delegated = await agentRequest(runtime, agent, "/api/agent/slack/interaction", {
+      method: "POST",
+      body: {
+        payload: JSON.stringify({
+          actions: [
+            {
+              action_id: "atm_assignment_delegate_select",
+              block_id: `atm_assignment_${proposedBody.assignmentRequest.id}`,
+              selected_option: { value: bobBody.owner.id }
+            }
+          ]
+        }),
+        responseText: "Bob has the right context."
+      }
+    });
+    expect(delegated.status).toBe(200);
+    const delegatedBody = await delegated.json();
+    expect(delegatedBody.assignmentRequest.previousRequestId).toBe(proposedBody.assignmentRequest.id);
+    expect(delegatedBody.assignmentRequest.ownerId).toBe(bobBody.owner.id);
+    expect(delegatedBody.task.assignee).toBe("Bob");
+    expect(delegatedBody.actions[0].userId).toBe("U_BOB");
+
+    const accepted = await agentRequest(runtime, agent, "/api/agent/slack/interaction", {
+      method: "POST",
+      body: {
+        requestId: delegatedBody.assignmentRequest.id,
+        action: "accept"
+      }
+    });
+    expect(accepted.status).toBe(200);
+    const acceptedBody = await accepted.json();
+    expect(acceptedBody.assignmentRequest.status).toBe("accepted");
+    expect(acceptedBody.task.status).toBe("in_progress");
+    expect(acceptedBody.task.assignee).toBe("Bob");
   });
 
   test("Slack digest collect and commit creates low-token task proposals and advances cursor", async () => {
@@ -433,7 +539,7 @@ describe("task-manager core", () => {
   test("agent-created coding tasks auto-create GitHub issues", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "hermes");
+    const agent = await createAgent(runtime, adminToken, "openclaw");
     process.env.GITHUB_TOKEN = "gh_test_token";
 
     await request(runtime, "/api/settings/github", {
@@ -598,12 +704,16 @@ describe("task-manager core", () => {
     const adminToken = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-agent-workspace-"));
     tempDirs.push(workspacePath);
+    mkdirSync(join(workspacePath, "plugins", "task-manager"), { recursive: true });
+    writeFileSync(join(workspacePath, "plugins", "task-manager", "task-manager-plugin.ts"), "export {};\n");
+    mkdirSync(join(workspacePath, "plugins", "shared"), { recursive: true });
+    writeFileSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"), "export {};\n");
 
     const response = await request(runtime, "/api/setup/agent/install", {
       method: "POST",
       token: adminToken,
       body: {
-        type: "hermes",
+        type: "openclaw",
         workspacePath,
         runReload: false,
         regenerateToken: true
@@ -611,13 +721,17 @@ describe("task-manager core", () => {
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.agent.name).toBe("Hermes Agent");
+    expect(body.agent.name).toBe("OpenClaw");
     expect(body.install.ok).toBe(true);
     expect(body.install.reload.ran).toBe(false);
-    expect(existsSync(join(workspacePath, "plugins", "task-manager", "task-manager-plugin.ts"))).toBe(true);
-    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(true);
+    expect(body.install.removedLegacy).toContain(join(workspacePath, "plugins", "task-manager"));
+    expect(existsSync(join(workspacePath, "skills", "task-manager", "task-manager-skill.ts"))).toBe(true);
+    expect(existsSync(join(workspacePath, "skills", "shared", "task-manager-client.ts"))).toBe(true);
+    expect(existsSync(join(workspacePath, "skills", "task-manager", "openclaw-task-manager.json"))).toBe(true);
+    expect(existsSync(join(workspacePath, "plugins", "task-manager"))).toBe(false);
+    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(false);
 
-    const env = readFileSync(join(workspacePath, "plugins", "task-manager", "task-manager.env"), "utf8");
+    const env = readFileSync(join(workspacePath, "skills", "task-manager", "task-manager.env"), "utf8");
     expect(env).toContain(`TASK_MANAGER_AGENT_ID=${body.agent.id}`);
     expect(env).toContain(`TASK_MANAGER_API_TOKEN=${body.token}`);
     expect(body.connectTest.ok).toBe(true);
@@ -626,7 +740,7 @@ describe("task-manager core", () => {
       method: "POST",
       token: adminToken,
       body: {
-        type: "hermes",
+        type: "openclaw",
         workspacePath,
         runReload: false
       }
@@ -635,8 +749,8 @@ describe("task-manager core", () => {
     const uninstallBody = await uninstall.json();
     expect(uninstallBody.uninstall.ok).toBe(true);
     expect(uninstallBody.tokenRevoked).toBe(true);
-    expect(existsSync(join(workspacePath, "plugins", "task-manager"))).toBe(false);
-    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(false);
+    expect(existsSync(join(workspacePath, "skills", "task-manager"))).toBe(false);
+    expect(existsSync(join(workspacePath, "skills", "shared", "task-manager-client.ts"))).toBe(false);
 
     const oldTokenCheck = await agentRequest(
       runtime,
@@ -653,12 +767,12 @@ describe("task-manager core", () => {
   test("setup detects workspace from environment when path is omitted", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const workspacePath = mkdtempSync(join(tmpdir(), "tm-hermes-detected-"));
+    const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-detected-"));
     tempDirs.push(workspacePath);
-    process.env.HERMES_WORKSPACE = workspacePath;
+    process.env.OPENCLAW_WORKSPACE = workspacePath;
 
     try {
-      const detected = await request(runtime, "/api/setup/agent/workspaces?type=hermes", {
+      const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
         token: adminToken
       });
       expect(detected.status).toBe(200);
@@ -669,7 +783,7 @@ describe("task-manager core", () => {
         method: "POST",
         token: adminToken,
         body: {
-          type: "hermes",
+          type: "openclaw",
           runReload: false,
           regenerateToken: true
         }
@@ -677,21 +791,21 @@ describe("task-manager core", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.install.workspacePath).toBe(workspacePath);
-      expect(existsSync(join(workspacePath, "plugins", "task-manager", "task-manager.env"))).toBe(true);
+      expect(existsSync(join(workspacePath, "skills", "task-manager", "task-manager.env"))).toBe(true);
     } finally {
-      delete process.env.HERMES_WORKSPACE;
+      delete process.env.OPENCLAW_WORKSPACE;
     }
   });
 
   test("setup detects workspace from task-manager environment variable", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const workspacePath = mkdtempSync(join(tmpdir(), "tm-hermes-mounted-"));
+    const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-mounted-"));
     tempDirs.push(workspacePath);
-    process.env.TASK_MANAGER_HERMES_WORKSPACE = workspacePath;
+    process.env.TASK_MANAGER_OPENCLAW_WORKSPACE = workspacePath;
 
     try {
-      const detected = await request(runtime, "/api/setup/agent/workspaces?type=hermes", {
+      const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
         token: adminToken
       });
       expect(detected.status).toBe(200);
@@ -699,7 +813,7 @@ describe("task-manager core", () => {
       expect(detectedBody.selected.path).toBe(workspacePath);
       expect(detectedBody.selected.source).toBe("env");
     } finally {
-      delete process.env.TASK_MANAGER_HERMES_WORKSPACE;
+      delete process.env.TASK_MANAGER_OPENCLAW_WORKSPACE;
     }
   });
 });
@@ -721,7 +835,7 @@ async function createAdmin(runtime: Runtime): Promise<string> {
   return body.token;
 }
 
-async function createAgent(runtime: Runtime, token: string, type: "hermes" | "openclaw") {
+async function createAgent(runtime: Runtime, token: string, type: "openclaw") {
   const response = await request(runtime, "/api/settings/agents", {
     method: "PATCH",
     token,

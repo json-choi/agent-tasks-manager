@@ -1,7 +1,7 @@
 {
   "name": "@jaesong/agent-task-manager",
-  "version": "0.1.0",
-  "description": "Self-hosted task manager for teams already using Hermes Agent or OpenClaw as their Slack bot.",
+  "version": "0.1.1",
+  "description": "Self-hosted task manager for teams already using OpenClaw as their Slack bot.",
   "private": false,
   "type": "module",
   "license": "MIT",
@@ -18,7 +18,6 @@
     "slack",
     "task-manager",
     "self-hosted",
-    "hermes",
     "openclaw",
     "elysia",
     "bun"

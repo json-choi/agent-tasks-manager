@@ -23,7 +23,7 @@ export const channelModes = ["manual_only", "suggest_only"] as const;
 
 export type ChannelMode = (typeof channelModes)[number];
 
-export const agentTypes = ["hermes", "openclaw"] as const;
+export const agentTypes = ["openclaw"] as const;
 
 export type AgentType = (typeof agentTypes)[number];
 
@@ -35,6 +35,7 @@ export interface SlackAction {
   text?: string;
   emoji?: string;
   blocks?: unknown;
+  metadata?: unknown;
 }
 
 export interface SlackThreadMessage {
@@ -113,6 +114,27 @@ export interface OwnerMapping {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export type AssignmentRequestStatus = "pending" | "accepted" | "delegated" | "declined" | "expired" | "cancelled";
+
+export interface AssignmentRequest {
+  id: string;
+  taskId: string;
+  agentId: string | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  slackUserId: string | null;
+  status: AssignmentRequestStatus;
+  round: number;
+  previousRequestId: string | null;
+  requestedBy: string | null;
+  responseText: string | null;
+  slackMessageTs: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  respondedAt: string | null;
 }
 
 export interface SlackDigestCandidate {
