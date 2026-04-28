@@ -238,6 +238,12 @@ bun run cli:check
 
 The dashboard bundle is generated from `src/client/dashboard.ts` into `public/src/main.js`. It is ignored in git and rebuilt by `bun run build` and `npm pack`.
 
+Release automation is documented in:
+
+```text
+docs/releasing.md
+```
+
 ## Roadmap Docs
 
 Landing pages and longer guides are tracked separately in:

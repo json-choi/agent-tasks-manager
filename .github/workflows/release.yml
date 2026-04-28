@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN_EXISTS: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Checkout
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: bun install --frozen-lockfile
+
+      - name: Build dashboard
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: bun run build
+
+      - name: Typecheck
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: bun run typecheck
+
+      - name: Test
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: bun test
+
+      - name: Check CLI syntax
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: bun run cli:check
+
+      - name: Check npm package contents
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm pack --dry-run
+
+      - name: Publish to npm with trusted publishing
+        if: ${{ steps.release.outputs.release_created == 'true' && env.NPM_TOKEN_EXISTS != 'true' }}
+        run: npm publish --access public --provenance
+
+      - name: Publish to npm with token fallback
+        if: ${{ steps.release.outputs.release_created == 'true' && env.NPM_TOKEN_EXISTS == 'true' }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
