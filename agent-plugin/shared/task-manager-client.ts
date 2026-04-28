@@ -57,6 +57,7 @@ export class TaskManagerClient {
     assignee?: string;
     reporter?: string;
     priority?: "P0" | "P1" | "P2";
+    category?: "general" | "coding";
     initiative?: string;
     nextAction?: string;
     githubRef?: string;

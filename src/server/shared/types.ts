@@ -15,6 +15,10 @@ export const taskPriorities = ["P0", "P1", "P2"] as const;
 
 export type TaskPriority = (typeof taskPriorities)[number];
 
+export const taskCategories = ["general", "coding"] as const;
+
+export type TaskCategory = (typeof taskCategories)[number];
+
 export const channelModes = ["manual_only", "suggest_only"] as const;
 
 export type ChannelMode = (typeof channelModes)[number];
@@ -58,6 +62,7 @@ export interface Task {
   description: string;
   status: TaskState;
   priority: TaskPriority;
+  category: TaskCategory;
   assignee: string | null;
   reporter: string | null;
   notify: boolean;

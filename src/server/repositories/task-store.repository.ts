@@ -16,10 +16,11 @@ import type {
   SlackDigest,
   SlackDigestCandidate,
   Task,
+  TaskCategory,
   TaskPriority,
   TaskState
 } from "../shared/types";
-import { channelModes, taskPriorities, taskStates } from "../shared/types";
+import { channelModes, taskCategories, taskPriorities, taskStates } from "../shared/types";
 import { compactText, hashSecret, newId, newSecret, nowIso, safeJsonParse, tokenPreview } from "../shared/utils";
 
 interface AgentRow {
@@ -43,6 +44,7 @@ interface TaskRow {
   description: string;
   status: TaskState;
   priority: TaskPriority;
+  category: TaskCategory;
   assignee: string | null;
   reporter: string | null;
   notify: number;
@@ -126,6 +128,7 @@ export interface CreateTaskInput {
   description?: string;
   status?: TaskState;
   priority?: TaskPriority;
+  category?: TaskCategory;
   assignee?: string | null;
   reporter?: string | null;
   notify?: boolean;
@@ -148,6 +151,7 @@ export interface UpdateTaskInput {
   description?: string;
   status?: TaskState;
   priority?: TaskPriority;
+  category?: TaskCategory;
   assignee?: string | null;
   reporter?: string | null;
   notify?: boolean;
@@ -450,22 +454,25 @@ export class TaskStore {
     const id = newId("task");
     const status = input.status ?? "proposed";
     const priority = input.priority ?? "P2";
+    const category = input.category ?? "general";
     const markdownPath = this.taskMarkdownPath(id, now);
 
     this.db
       .query(
         `INSERT INTO tasks
-         (id, title, description, status, assignee, channel_id, thread_ts, source_agent_id,
+         (id, title, description, status, priority, category, assignee, channel_id, thread_ts, source_agent_id,
           source_agent_name, source_author, source_url, due_at, created_at, updated_at,
-          confirmed_at, markdown_path, dedupe_key, priority, reporter, notify, initiative,
+          confirmed_at, markdown_path, dedupe_key, reporter, notify, initiative,
           next_action, result, github_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
         input.title,
         input.description ?? "",
         status,
+        priority,
+        category,
         input.assignee ?? null,
         input.channelId ?? null,
         input.threadTs ?? null,
@@ -479,7 +486,6 @@ export class TaskStore {
         status === "confirmed" ? now : null,
         markdownPath,
         input.dedupeKey ?? null,
-        priority,
         input.reporter ?? null,
         input.notify === false ? 0 : 1,
         input.initiative ?? null,
@@ -532,6 +538,7 @@ export class TaskStore {
     const description = input.description ?? existing.description;
     const status = input.status ?? existing.status;
     const priority = input.priority ?? existing.priority;
+    const category = input.category ?? existing.category;
     const assignee = input.assignee === undefined ? existing.assignee : input.assignee;
     const reporter = input.reporter === undefined ? existing.reporter : input.reporter;
     const notify = input.notify === undefined ? existing.notify : input.notify;
@@ -548,7 +555,7 @@ export class TaskStore {
       .query(
         `UPDATE tasks
          SET title = ?, description = ?, status = ?, priority = ?, assignee = ?, reporter = ?,
-             notify = ?, initiative = ?, next_action = ?, result = ?, github_ref = ?, due_at = ?,
+             category = ?, notify = ?, initiative = ?, next_action = ?, result = ?, github_ref = ?, due_at = ?,
              updated_at = ?, confirmed_at = ?
          WHERE id = ?`
       )
@@ -559,6 +566,7 @@ export class TaskStore {
         priority,
         assignee,
         reporter,
+        category,
         notify ? 1 : 0,
         initiative,
         nextAction,
@@ -864,6 +872,54 @@ export class TaskStore {
     return this.getGitHubSettings();
   }
 
+  upsertGitHubTaskLink(input: {
+    taskId: string;
+    repo: string;
+    issueNumber: number;
+    issueUrl?: string | null;
+    state?: string | null;
+  }): void {
+    const now = nowIso();
+    this.db
+      .query(
+        `INSERT INTO github_task_links
+         (task_id, repo, issue_number, issue_url, state, last_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           repo = excluded.repo,
+           issue_number = excluded.issue_number,
+           issue_url = excluded.issue_url,
+           state = excluded.state,
+           last_synced_at = excluded.last_synced_at`
+      )
+      .run(input.taskId, input.repo, input.issueNumber, input.issueUrl ?? null, input.state ?? null, now);
+  }
+
+  updateGitHubTaskLinkState(taskId: string, state: string | null): void {
+    const now = nowIso();
+    this.db
+      .query("UPDATE github_task_links SET state = ?, last_synced_at = ? WHERE task_id = ?")
+      .run(state, now, taskId);
+  }
+
+  findTaskByGitHubIssue(repo: string, issueNumber: number): Task | null {
+    const linked = this.db
+      .query(
+        `SELECT tasks.*
+         FROM github_task_links
+         JOIN tasks ON tasks.id = github_task_links.task_id
+         WHERE lower(github_task_links.repo) = lower(?) AND github_task_links.issue_number = ?`
+      )
+      .get(repo, issueNumber) as TaskRow | null;
+    if (linked) return taskFromRow(linked);
+
+    const ref = `${repo}#${issueNumber}`;
+    const row = this.db
+      .query("SELECT * FROM tasks WHERE lower(github_ref) = lower(?)")
+      .get(ref) as TaskRow | null;
+    return row ? taskFromRow(row) : null;
+  }
+
   recordGitHubSyncRun(input: {
     status: "skipped" | "completed" | "error";
     summary: Record<string, unknown>;
@@ -1139,6 +1195,7 @@ public_access:
         description TEXT NOT NULL,
         status TEXT NOT NULL,
         priority TEXT NOT NULL DEFAULT 'P2',
+        category TEXT NOT NULL DEFAULT 'general',
         assignee TEXT,
         reporter TEXT,
         notify INTEGER NOT NULL DEFAULT 1,
@@ -1161,6 +1218,7 @@ public_access:
       )
     `);
     this.ensureTaskColumn("priority", "TEXT NOT NULL DEFAULT 'P2'");
+    this.ensureTaskColumn("category", "TEXT NOT NULL DEFAULT 'general'");
     this.ensureTaskColumn("reporter", "TEXT");
     this.ensureTaskColumn("notify", "INTEGER NOT NULL DEFAULT 1");
     this.ensureTaskColumn("initiative", "TEXT");
@@ -1285,12 +1343,14 @@ function agentFromRow(row: AgentRow): AgentSettings {
 function taskFromRow(row: TaskRow): Task {
   const status = taskStates.includes(row.status) ? row.status : "proposed";
   const priority = taskPriorities.includes(row.priority) ? row.priority : "P2";
+  const category = taskCategories.includes(row.category) ? row.category : "general";
   return {
     id: row.id,
     title: row.title,
     description: row.description,
     status,
     priority,
+    category,
     assignee: row.assignee,
     reporter: row.reporter,
     notify: row.notify !== 0,
@@ -1378,6 +1438,7 @@ id: ${yamlValue(task.id)}
 title: ${yamlValue(task.title)}
 status: ${yamlValue(task.status)}
 priority: ${yamlValue(task.priority)}
+category: ${yamlValue(task.category)}
 assignee: ${yamlValue(task.assignee)}
 reporter: ${yamlValue(task.reporter)}
 notify: ${yamlValue(task.notify)}

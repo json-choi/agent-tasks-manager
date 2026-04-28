@@ -1,5 +1,5 @@
-import type { AgentType, ChannelMode, TaskPriority, TaskState } from "./types";
-import { agentTypes, channelModes, taskPriorities, taskStates } from "./types";
+import type { AgentType, ChannelMode, TaskCategory, TaskPriority, TaskState } from "./types";
+import { agentTypes, channelModes, taskCategories, taskPriorities, taskStates } from "./types";
 import { stringValue } from "./utils";
 
 export function parseTaskState(value: unknown): TaskState | null {
@@ -10,6 +10,11 @@ export function parseTaskState(value: unknown): TaskState | null {
 export function parseTaskPriority(value: unknown): TaskPriority | null {
   if (typeof value !== "string") return null;
   return taskPriorities.includes(value as TaskPriority) ? (value as TaskPriority) : null;
+}
+
+export function parseTaskCategory(value: unknown): TaskCategory | null {
+  if (typeof value !== "string") return null;
+  return taskCategories.includes(value as TaskCategory) ? (value as TaskCategory) : null;
 }
 
 export function parseChannelMode(value: unknown): ChannelMode | null {

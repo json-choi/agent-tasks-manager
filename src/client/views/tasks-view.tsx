@@ -4,6 +4,7 @@ import { MetricCard, OwnerOptions, PriorityLine, ResultLine } from "../component
 import { errorMessage, relativeTime } from "../lib/format";
 import {
   activityLabel,
+  categories,
   filterTasks,
   focusTasks,
   priorities,
@@ -147,6 +148,12 @@ function TaskComposer({
           {t("Priority")}
           <select id="task-priority" name="priority" defaultValue="P2">
             {priorities.map((priority) => <option key={priority} value={priority}>{priority}</option>)}
+          </select>
+        </label>
+        <label htmlFor="task-category">
+          {t("Category")}
+          <select id="task-category" name="category" defaultValue="general">
+            {categories.map((category) => <option key={category} value={category}>{t(category)}</option>)}
           </select>
         </label>
         <label htmlFor="task-status">
@@ -313,6 +320,12 @@ function TaskDetail({
             {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
           </select>
         </label>
+        <label htmlFor="category-select">
+          {t("Category")}
+          <select id="category-select" value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.currentTarget.value })}>
+            {categories.map((category) => <option key={category} value={category}>{t(category)}</option>)}
+          </select>
+        </label>
         <label htmlFor="assignee-input">
           {t("Assignee")}
           <select id="assignee-input" value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.currentTarget.value })}>
@@ -368,6 +381,7 @@ function ActivityItem({ task, t }: { task: Task; t: Translator }) {
 
 function taskSourceIcon(task: Task): LucideIcon {
   if (task.githubRef) return GitBranch;
+  if (task.category === "coding") return GitBranch;
   if (task.channelId || task.threadTs || task.sourceAgentName) return Bot;
   return Pencil;
 }

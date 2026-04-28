@@ -1,6 +1,11 @@
 import { Elysia } from "elysia";
 import type { ServerContext } from "../../context";
-import { runGitHubSync, summarizeGitHubWebhook, verifyGitHubSignature } from "../../services/github-sync.service";
+import {
+  handleGitHubWebhook,
+  runGitHubSync,
+  summarizeGitHubWebhook,
+  verifyGitHubSignature
+} from "../../services/github-sync.service";
 import { jsonResponse } from "../../shared/utils";
 
 export function integrationsController({ store, requireAdmin }: ServerContext) {
@@ -22,12 +27,14 @@ export function integrationsController({ store, requireAdmin }: ServerContext) {
       }
 
       const event = request.headers.get("x-github-event") ?? "unknown";
+      const deliveryId = request.headers.get("x-github-delivery") ?? null;
       const payload = JSON.parse(bodyText || "{}") as Record<string, unknown>;
       store.recordEvent(null, "github.webhook", {
         event,
+        deliveryId,
         ...summarizeGitHubWebhook(payload)
       });
-      const result = await runGitHubSync(store);
-      return { ok: true, event, sync: result };
+      const result = handleGitHubWebhook(store, event, payload);
+      return { ok: true, event, deliveryId, sync: result };
     });
 }

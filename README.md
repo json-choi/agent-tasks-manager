@@ -12,7 +12,8 @@ ATM does not add another Slack bot. Your existing Hermes/OpenClaw-style agent ke
 - Supports owner mapping, assignment prompts, stale task checks, and daily digests.
 - Installs and uninstalls Hermes/OpenClaw plugins from the setup flow.
 - Uses Better Auth-backed admin sessions.
-- Optionally syncs tasks to GitHub issues.
+- Classifies coding tasks and optionally creates linked GitHub issues.
+- Syncs linked task status from GitHub issue webhooks.
 
 ## What It Does Not Do
 
@@ -32,6 +33,8 @@ Slack thread
   -> Markdown + SQLite
   -> optional GitHub issue sync
 ```
+
+Agent plugins call the ATM HTTP API instead of shelling out to the CLI. The CLI is kept for install/start/admin workflows; runtime Slack and webhook integrations stay in the API server so credentials, auth checks, idempotency, and GitHub synchronization live in one service boundary.
 
 Runtime layout:
 
@@ -100,6 +103,8 @@ DATA_DIR=./data
 PORT=3011
 PUBLIC_BASE_URL=http://localhost:3011
 BETTER_AUTH_SECRET=replace-with-a-random-secret-at-least-32-characters
+GITHUB_TOKEN=github_pat_or_app_token_for_issue_creation
+GITHUB_WEBHOOK_SECRET=shared_secret_configured_on_the_github_webhook
 ```
 
 Storage defaults to `./data`:

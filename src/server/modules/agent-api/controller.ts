@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { adapterFor } from "../../adapters/agent-adapter";
 import type { ServerContext } from "../../context";
+import { syncTaskToGitHub } from "../../services/github-sync.service";
 import {
   filterCardTasks,
   inferPriorityFromText,
@@ -10,6 +11,7 @@ import {
   renderTaskCardsText,
   renderThreadDescription
 } from "../../services/slack-task.service";
+import { inferTaskCategory } from "../../services/task-classification.service";
 import { parseTaskPriority, parseTaskState, signalToStatus } from "../../shared/parsers";
 import type { TaskState } from "../../shared/types";
 import { asRecord, booleanValue, jsonResponse, numberValue, stringValue } from "../../shared/utils";
@@ -55,7 +57,7 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         cursor: store.getSlackCursor(auth.agent.id, channelId)
       };
     })
-    .post("/api/agent/slack/digest/commit", ({ request, body }) => {
+    .post("/api/agent/slack/digest/commit", async ({ request, body }) => {
       const auth = requireAgent(request);
       if ("response" in auth) return auth.response;
 
@@ -76,10 +78,19 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
           auth.agent,
           selectedCandidateIds ? { ...commitInput, selectedCandidateIds } : commitInput
         );
+        const githubSettings = store.getGitHubSettings();
+        const categorizedTasks = result.tasks.map((task) => {
+          const category = inferTaskCategory(task, githubSettings);
+          return task.category === category ? task : store.updateTask(task.id, { category }) ?? task;
+        });
+        const githubSync = await Promise.all(categorizedTasks.map((task) => syncTaskToGitHub(store, task, githubSettings)));
+        const tasks = categorizedTasks.map((task) => store.getTask(task.id) ?? task);
         return {
           ok: true,
           ...result,
-          actions: result.tasks.map((task) => adapterFor(auth.agent.type).createTask(task, false)).flat()
+          tasks,
+          githubSync,
+          actions: tasks.map((task) => adapterFor(auth.agent.type).createTask(task, false)).flat()
         };
       } catch (error) {
         return jsonResponse({ error: error instanceof Error ? error.message : "Digest commit failed" }, 404);
@@ -101,7 +112,7 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         actions: adapter.captureThread(context)
       };
     })
-    .post("/api/agent/task/propose", ({ request, body }) => {
+    .post("/api/agent/task/propose", async ({ request, body }) => {
       const auth = requireAgent(request);
       if ("response" in auth) return auth.response;
 
@@ -127,18 +138,25 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       const title = explicitTitle ?? inferTitle(context);
       const description = stringValue(input.description) ?? renderThreadDescription(context);
       const confirmed = booleanValue(input.confirmed) === true;
+      const githubRef = stringValue(input.githubRef);
+      const initiative = stringValue(input.initiative);
+      const category = inferTaskCategory(
+        { category: input.category, title, description, initiative, githubRef },
+        store.getGitHubSettings()
+      );
       const result = store.createTask({
         title,
         description,
         status: confirmed ? "confirmed" : "proposed",
         priority: parseTaskPriority(input.priority) ?? inferPriorityFromText(`${title} ${description}`),
+        category,
         assignee: stringValue(input.assignee),
         reporter: stringValue(input.reporter) ?? context.authorName ?? context.authorId ?? null,
         notify: booleanValue(input.notify) ?? true,
-        initiative: stringValue(input.initiative),
+        initiative,
         nextAction: stringValue(input.nextAction),
         result: stringValue(input.result),
-        githubRef: stringValue(input.githubRef),
+        githubRef,
         channelId: context.channelId ?? null,
         threadTs: context.threadTs ?? null,
         sourceAgentId: auth.agent.id,
@@ -148,14 +166,17 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         dueAt: stringValue(input.dueAt),
         dedupeKey: store.buildDedupeKey(context)
       });
+      const githubSync = await syncTaskToGitHub(store, result.task);
+      const task = store.getTask(result.task.id) ?? result.task;
 
       const adapter = adapterFor(auth.agent.type);
       return {
         ok: true,
         duplicate: result.duplicate,
         channelMode,
-        task: result.task,
-        actions: adapter.createTask(result.task, result.duplicate)
+        task,
+        githubSync,
+        actions: adapter.createTask(task, result.duplicate)
       };
     })
     .post("/api/agent/task/:id/assignment-response", ({ request, params, body }) => {

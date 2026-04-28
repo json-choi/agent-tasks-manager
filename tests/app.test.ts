@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,8 +8,14 @@ import type { Runtime } from "../src/server/context";
 
 const runtimes: Runtime[] = [];
 const tempDirs: string[] = [];
+const originalFetch = globalThis.fetch;
+const originalGitHubToken = process.env.GITHUB_TOKEN;
+const originalGitHubWebhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
+  restoreEnv("GITHUB_TOKEN", originalGitHubToken);
+  restoreEnv("GITHUB_WEBHOOK_SECRET", originalGitHubWebhookSecret);
   for (const runtime of runtimes.splice(0)) {
     runtime.store.close();
   }
@@ -423,6 +430,169 @@ describe("task-manager core", () => {
     expect(syncBody.summary.reason).toBe("disabled");
   });
 
+  test("agent-created coding tasks auto-create GitHub issues", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminToken, "hermes");
+    process.env.GITHUB_TOKEN = "gh_test_token";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoCreateIssues: true,
+        labels: ["task-manager"],
+        rules: [{ repo: "acme/web", projectLabel: "frontend", codeIndicators: ["retry"] }]
+      }
+    });
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+      });
+      return new Response(JSON.stringify({
+        number: 42,
+        html_url: "https://github.com/acme/web/issues/42",
+        state: "open"
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const proposed = await agentRequest(runtime, agent, "/api/agent/task/propose", {
+      method: "POST",
+      body: {
+        context: {
+          channelId: "C123",
+          threadTs: "1710000000.000900",
+          messageTs: "1710000000.000900",
+          authorId: "U111",
+          messages: [{ userId: "U111", text: "태스크로 만들어줘: implement API retry", ts: "1710000000.000900" }]
+        },
+        confirmed: true
+      }
+    });
+    expect(proposed.status).toBe(200);
+    const proposedBody = await proposed.json();
+    expect(proposedBody.task.category).toBe("coding");
+    expect(proposedBody.task.githubRef).toBe("acme/web#42");
+    expect(proposedBody.githubSync.status).toBe("created");
+    expect(calls).toHaveLength(1);
+    const firstCall = calls[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall!.url).toBe("https://api.github.com/repos/acme/web/issues");
+    expect(firstCall!.body.labels).toEqual(["task-manager", "frontend", "category:coding", "priority:P2", "status:confirmed"]);
+    expect(String(firstCall!.body.body)).toContain(`Task Manager ID: ${proposedBody.task.id}`);
+
+    const created = await request(runtime, `/api/tasks/${proposedBody.task.id}`, { token: adminToken });
+    const createdBody = await created.json();
+    const markdown = readFileSync(createdBody.task.markdownPath, "utf8");
+    expect(markdown).toContain('category: "coding"');
+    expect(markdown).toContain('github_ref: "acme/web#42"');
+  });
+
+  test("general tasks are not auto-created as GitHub issues", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    process.env.GITHUB_TOKEN = "gh_test_token";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoCreateIssues: true,
+        rules: [{ repo: "acme/web", codeIndicators: ["api"] }]
+      }
+    });
+
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      return new Response("{}", { status: 201, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: "Prepare stakeholder agenda",
+        description: "Collect agenda items for the weekly sync.",
+        status: "confirmed",
+        category: "general"
+      }
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json();
+    expect(createdBody.task.category).toBe("general");
+    expect(createdBody.task.githubRef).toBe(null);
+    expect(createdBody.githubSync).toMatchObject({ status: "skipped", reason: "not-coding" });
+    expect(fetchCount).toBe(0);
+  });
+
+  test("GitHub issue webhooks update linked task status", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    process.env.GITHUB_WEBHOOK_SECRET = "webhook-secret";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoUpdateTaskStatusFromGitHub: true,
+        autoCompleteClosedIssues: true
+      }
+    });
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: "Fix webhook status sync",
+        description: "Implement GitHub issue webhook status sync.",
+        status: "in_progress",
+        category: "coding",
+        githubRef: "acme/web#7"
+      }
+    });
+    const createdBody = await created.json();
+    expect(createdBody.task.status).toBe("in_progress");
+
+    const closedPayload = {
+      action: "closed",
+      repository: { full_name: "acme/web" },
+      issue: {
+        number: 7,
+        state: "closed",
+        html_url: "https://github.com/acme/web/issues/7",
+        labels: []
+      }
+    };
+    const closed = await githubWebhook(runtime, closedPayload);
+    expect(closed.status).toBe(200);
+    const closedBody = await closed.json();
+    expect(closedBody.sync.status).toBe("updated");
+    expect(closedBody.sync.task.status).toBe("done");
+
+    const reopenedPayload = {
+      ...closedPayload,
+      action: "reopened",
+      issue: { ...closedPayload.issue, state: "open" }
+    };
+    const reopened = await githubWebhook(runtime, reopenedPayload);
+    expect(reopened.status).toBe(200);
+    const reopenedBody = await reopened.json();
+    expect(reopenedBody.sync.status).toBe("updated");
+    expect(reopenedBody.sync.task.status).toBe("in_progress");
+
+    const final = await request(runtime, `/api/tasks/${createdBody.task.id}`, { token: adminToken });
+    const finalBody = await final.json();
+    expect(finalBody.task.status).toBe("in_progress");
+    expect(finalBody.task.githubRef).toBe("acme/web#7");
+  });
+
   test("setup can automatically install plugin files into a local agent workspace", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
@@ -597,4 +767,28 @@ async function agentRequest(
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   return runtime.app.handle(new Request(`http://localhost${path}`, init));
+}
+
+async function githubWebhook(runtime: Runtime, payload: Record<string, unknown>): Promise<Response> {
+  const body = JSON.stringify(payload);
+  const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  return runtime.app.handle(new Request("http://localhost/api/integrations/github/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-delivery": "delivery-test",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    body
+  }));
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
 }

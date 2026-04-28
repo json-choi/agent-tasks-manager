@@ -2,11 +2,13 @@ import type { OwnerMapping, Task, View } from "../types";
 
 export const statuses = ["proposed", "confirmed", "assigning", "in_progress", "blocked", "review_needed", "done", "cancelled"];
 export const priorities = ["P0", "P1", "P2"] as const;
+export const categories = ["general", "coding"] as const;
 export const taskViews: View[] = ["dashboard", "tasks"];
 
 export function taskDraft(task: Task): {
   status: string;
   priority: string;
+  category: string;
   assignee: string;
   reporter: string;
   initiative: string;
@@ -17,6 +19,7 @@ export function taskDraft(task: Task): {
   return {
     status: task.status,
     priority: task.priority || "P2",
+    category: task.category || "general",
     assignee: task.assignee || "",
     reporter: task.reporter || "",
     initiative: task.initiative || "",
@@ -33,7 +36,7 @@ export function slackPeople(people: OwnerMapping[]) {
 export function filterTasks(tasks: Task[], search: string) {
   const query = search.trim().toLowerCase();
   if (!query) return tasks;
-  return tasks.filter((task) => [task.title, task.id, task.status, task.assignee, task.reporter, task.githubRef]
+  return tasks.filter((task) => [task.title, task.id, task.status, task.category, task.assignee, task.reporter, task.githubRef]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query)));
 }
@@ -77,6 +80,7 @@ export function focusTasks(tasks: Task[]) {
 
 export function taskSource(task: Task) {
   if (task.githubRef) return "Issue";
+  if (task.category === "coding") return "Code";
   if (task.channelId || task.threadTs || task.sourceAgentName) return "Agent";
   return "Manual";
 }

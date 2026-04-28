@@ -4,6 +4,7 @@ export type Task = {
   description: string;
   status: string;
   priority?: "P0" | "P1" | "P2";
+  category?: "general" | "coding";
   assignee?: string | null;
   reporter?: string | null;
   initiative?: string | null;
