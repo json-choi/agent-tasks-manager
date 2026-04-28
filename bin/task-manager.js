@@ -15,11 +15,9 @@ const projectEntries = [
   "docs",
   "public",
   "src",
-  "Dockerfile",
   "LICENSE",
   "README.md",
   "bun.lock",
-  "docker-compose.yml",
   "install.sh",
   "package.json",
   "tsconfig.json"
@@ -60,7 +58,7 @@ switch (command) {
 
 function install(argv) {
   const options = parseOptions(argv);
-  const mode = option(options, "mode", "local");
+  assertLocalOnly(options);
   const installDir = installPath(options);
   const port = String(option(options, "port", process.env.PORT ?? "3011"));
   const publicBaseUrl = String(option(options, "public-url", process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`));
@@ -69,60 +67,39 @@ function install(argv) {
     option(options, "auth-secret", process.env.BETTER_AUTH_SECRET ?? currentEnv.BETTER_AUTH_SECRET ?? randomSecret())
   );
 
-  if (!["docker", "local"].includes(mode)) fail("--mode must be docker or local");
   copyProject(installDir);
   writeEnv(installDir, {
-    DATA_DIR: mode === "docker" ? "/data" : path.join(installDir, "data"),
+    DATA_DIR: path.join(installDir, "data"),
     PORT: port,
     PUBLIC_BASE_URL: publicBaseUrl,
-    BETTER_AUTH_SECRET: authSecret,
-    TASK_MANAGER_INSTALL_MODE: mode
+    BETTER_AUTH_SECRET: authSecret
   });
 
-  if (mode === "docker") {
-    requireDocker();
-    run("docker", ["compose", "up", "-d", "--build"], { cwd: installDir });
-  } else {
-    requireCommand("bun", "Bun is required for --mode local. Install Bun or use --mode docker.");
-    run("bun", ["install"], { cwd: installDir });
-    run("bun", ["run", "build"], { cwd: installDir });
-  }
+  requireCommand("bun", "Bun is required to install ATM.");
+  run("bun", ["install"], { cwd: installDir });
+  run("bun", ["run", "build"], { cwd: installDir });
 
   console.log(`ATM installed in ${installDir}`);
   console.log(`Setup URL: ${publicBaseUrl}/setup`);
-  if (mode === "local") {
-    console.log(`Run command: atm run --mode local --dir ${shellValue(installDir)}`);
-  }
+  console.log(`Run command: atm run --dir ${shellValue(installDir)}`);
 }
 
 function start(argv) {
   const options = parseOptions(argv);
-  const mode = option(options, "mode", readEnv(installPath(options)).TASK_MANAGER_INSTALL_MODE ?? "local");
+  assertLocalOnly(options);
   const installDir = installPath(options);
 
-  if (mode === "docker") {
-    requireDocker();
-    run("docker", ["compose", "up", "-d"], { cwd: installDir });
-    return;
-  }
-
-  requireCommand("bun", "Bun is required for local mode.");
+  requireCommand("bun", "Bun is required to start ATM.");
   const env = { ...process.env, ...readEnv(installDir) };
   run("bun", ["src/server/index.ts"], { cwd: installDir, env });
 }
 
 function runStack(argv) {
   const options = parseOptions(argv);
+  assertLocalOnly(options);
   const installDir = installPath(options);
-  const mode = option(options, "mode", readEnv(installDir).TASK_MANAGER_INSTALL_MODE ?? "local");
 
-  if (mode === "docker") {
-    requireDocker();
-    run("docker", ["compose", "up"], { cwd: installDir });
-    return;
-  }
-
-  requireCommand("bun", "Bun is required for local mode.");
+  requireCommand("bun", "Bun is required to run ATM.");
   const env = { ...process.env, ...readEnv(installDir) };
   const children = [
     spawn("bun", ["src/server/index.ts"], { cwd: installDir, env, stdio: "inherit" }),
@@ -151,36 +128,24 @@ function runStack(argv) {
 
 function worker(argv) {
   const options = parseOptions(argv);
+  assertLocalOnly(options);
   const installDir = installPath(options);
-  requireCommand("bun", "Bun is required for local worker mode.");
+  requireCommand("bun", "Bun is required to run the ATM worker.");
   const env = { ...process.env, ...readEnv(installDir) };
   run("bun", ["src/worker/index.ts"], { cwd: installDir, env });
 }
 
 function stop(argv) {
   const options = parseOptions(argv);
-  const mode = option(options, "mode", readEnv(installPath(options)).TASK_MANAGER_INSTALL_MODE ?? "local");
-  const installDir = installPath(options);
-
-  if (mode === "docker") {
-    requireDocker();
-    run("docker", ["compose", "down"], { cwd: installDir });
-    return;
-  }
-
-  console.log("Local mode runs in the foreground. Stop it with Ctrl-C in the terminal that started it.");
+  assertLocalOnly(options);
+  console.log("ATM runs in the foreground. Stop it with Ctrl-C in the terminal that started it.");
 }
 
 function uninstall(argv) {
   const options = parseOptions(argv);
+  assertLocalOnly(options);
   const installDir = installPath(options);
   const removeData = Boolean(options["remove-data"]);
-  const mode = option(options, "mode", readEnv(installDir).TASK_MANAGER_INSTALL_MODE ?? "local");
-
-  if (mode === "docker" && existsSync(path.join(installDir, "docker-compose.yml"))) {
-    requireDocker();
-    run("docker", ["compose", "down", ...(removeData ? ["-v"] : [])], { cwd: installDir });
-  }
 
   if (removeData) {
     rmSync(installDir, { recursive: true, force: true });
@@ -189,17 +154,16 @@ function uninstall(argv) {
   }
 
   console.log(`Stopped ATM. Data and install files are preserved in ${installDir}.`);
-  console.log("Run with --remove-data to remove the install directory and Docker volume.");
+  console.log("Run with --remove-data to remove the install directory.");
 }
 
 function doctor(argv) {
   const options = parseOptions(argv);
+  assertLocalOnly(options);
   const installDir = installPath(options);
   const checks = [
     ["install_dir", existsSync(installDir), installDir],
-    ["docker", commandOk("docker", ["--version"]), "required for docker mode"],
-    ["docker_compose", commandOk("docker", ["compose", "version"]), "required for docker mode"],
-    ["bun", commandOk("bun", ["--version"]), "required for local mode"]
+    ["bun", commandOk("bun", ["--version"]), "required to install and run ATM"]
   ];
 
   for (const [name, ok, detail] of checks) {
@@ -211,16 +175,15 @@ function help() {
   console.log(`ATM · Agent Tasks Manager
 
 Usage:
-  atm install [--mode docker|local] [--dir PATH] [--port 3011] [--public-url URL]
-  atm start   [--mode docker|local] [--dir PATH]
-  atm run     [--mode docker|local] [--dir PATH]
+  atm install [--dir PATH] [--port 3011] [--public-url URL]
+  atm start   [--dir PATH]
+  atm run     [--dir PATH]
   atm worker  [--dir PATH]
-  atm stop    [--mode docker|local] [--dir PATH]
+  atm stop    [--dir PATH]
   atm uninstall [--dir PATH] [--remove-data]
   atm doctor [--dir PATH]
 
 Defaults:
-  --mode local
   --dir  ${defaultInstallDir}
 `);
 }
@@ -313,10 +276,9 @@ function option(options, key, fallback) {
   return options[key] === undefined ? fallback : options[key];
 }
 
-function requireDocker() {
-  requireCommand("docker", "Docker is required for docker mode.");
-  const result = spawnSync("docker", ["compose", "version"], { stdio: "ignore" });
-  if (result.status !== 0) fail("Docker Compose v2 is required for docker mode.");
+function assertLocalOnly(options) {
+  if (options.mode === undefined || options.mode === "local") return;
+  fail("Unsupported --mode value. ATM installs and runs with Bun only.");
 }
 
 function requireCommand(name, message) {

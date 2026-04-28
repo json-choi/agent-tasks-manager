@@ -443,7 +443,7 @@ describe("task-manager core", () => {
     }
   });
 
-  test("setup detects Docker-style mounted workspace paths", async () => {
+  test("setup detects workspace from task-manager environment variable", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-hermes-mounted-"));
