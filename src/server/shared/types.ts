@@ -163,6 +163,22 @@ export interface GitHubSettings {
   updatedAt: string | null;
 }
 
+export interface SetupReviewSettings {
+  slackPermissionsReviewedAt: string | null;
+}
+
+export interface PublicAccessSettings {
+  provider: "cloudflare";
+  mode: "quick" | "remote";
+  publicUrl: string | null;
+  localServiceUrl: string;
+  tunnelName: string | null;
+  tunnelTokenConfigured: boolean;
+  tunnelTokenPreview: string | null;
+  accessProtected: boolean;
+  updatedAt: string | null;
+}
+
 export interface OutboxItem {
   id: string;
   agentId: string;

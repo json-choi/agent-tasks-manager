@@ -3,11 +3,12 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "agent-tasks-manager",
+      "name": "@jaesong/agent-task-manager",
       "dependencies": {
         "@elysiajs/static": "latest",
         "better-auth": "^1.6.9",
         "elysia": "latest",
+        "lucide": "^1.11.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -81,6 +82,8 @@
     "jose": ["jose@6.2.3", "", {}, "sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw=="],
 
     "kysely": ["kysely@0.28.16", "", {}, "sha512-3i5pmOiZvMDj00qhrIVbH0AnioVTx22DMP7Vn5At4yJO46iy+FM8Y/g61ltenLVSo3fiO8h8Q3QOFgf/gQ72ww=="],
+
+    "lucide": ["lucide@1.11.0", "", {}, "sha512-2uvbGlcztUY+z0Ef++YCaxD6mtzrPsUJ1qWbIfqZrZGRxZBCL3icE6g2nzRTtJ6YywOoXC5blL/NmkLI66en5g=="],
 
     "memoirist": ["memoirist@0.4.0", "", {}, "sha512-zxTgA0mSYELa66DimuNQDvyLq36AwDlTuVRbnQtB+VuTcKWm5Qc4z3WkSpgsFWHNhexqkIooqpv4hdcqrX5Nmg=="],
 

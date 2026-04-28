@@ -10,6 +10,8 @@ import type {
   GitHubSettings,
   OwnerMapping,
   OutboxItem,
+  PublicAccessSettings,
+  SetupReviewSettings,
   SlackCursor,
   SlackDigest,
   SlackDigestCandidate,
@@ -111,6 +113,12 @@ interface OutboxRow {
   status: "pending" | "acked";
   created_at: string;
   acked_at: string | null;
+}
+
+interface RuntimeSettingRow {
+  key: string;
+  payload: string;
+  updated_at: string;
 }
 
 export interface CreateTaskInput {
@@ -869,6 +877,82 @@ export class TaskStore {
     return { id, status: input.status, summary: input.summary, error: input.error ?? null, createdAt: now };
   }
 
+  getSetupReviewSettings(): SetupReviewSettings {
+    const row = this.db
+      .query("SELECT key, payload, updated_at FROM runtime_settings WHERE key = 'setup_review'")
+      .get() as RuntimeSettingRow | null;
+    const payload = row ? safeJsonParse<Partial<SetupReviewSettings>>(row.payload, {}) : {};
+    return {
+      slackPermissionsReviewedAt: payload.slackPermissionsReviewedAt ?? null
+    };
+  }
+
+  updateSetupReviewSettings(input: Partial<SetupReviewSettings>): SetupReviewSettings {
+    const current = this.getSetupReviewSettings();
+    const next: SetupReviewSettings = {
+      ...current,
+      ...input
+    };
+    const now = nowIso();
+    this.db
+      .query(
+        `INSERT INTO runtime_settings (key, payload, updated_at)
+         VALUES ('setup_review', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
+      )
+      .run(JSON.stringify(next), now);
+    this.audit("setup_review.updated", next);
+    this.writeAppConfig();
+    return this.getSetupReviewSettings();
+  }
+
+  getPublicAccessSettings(): PublicAccessSettings {
+    const row = this.db
+      .query("SELECT key, payload, updated_at FROM runtime_settings WHERE key = 'public_access'")
+      .get() as RuntimeSettingRow | null;
+    const payload = row ? safeJsonParse<Partial<PublicAccessSettings>>(row.payload, {}) : {};
+    return {
+      provider: "cloudflare",
+      mode: payload.mode === "remote" ? "remote" : "quick",
+      publicUrl: payload.publicUrl ?? null,
+      localServiceUrl: payload.localServiceUrl ?? "http://localhost:3011",
+      tunnelName: payload.tunnelName ?? null,
+      tunnelTokenConfigured: Boolean(payload.tunnelTokenConfigured),
+      tunnelTokenPreview: payload.tunnelTokenPreview ?? null,
+      accessProtected: Boolean(payload.accessProtected),
+      updatedAt: payload.updatedAt ?? row?.updated_at ?? null
+    };
+  }
+
+  updatePublicAccessSettings(input: Partial<PublicAccessSettings>): PublicAccessSettings {
+    const current = this.getPublicAccessSettings();
+    const now = nowIso();
+    const next: PublicAccessSettings = {
+      ...current,
+      ...input,
+      provider: "cloudflare",
+      updatedAt: now
+    };
+    this.db
+      .query(
+        `INSERT INTO runtime_settings (key, payload, updated_at)
+         VALUES ('public_access', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
+      )
+      .run(JSON.stringify(next), now);
+    this.audit("public_access.updated", {
+      provider: next.provider,
+      mode: next.mode,
+      publicUrl: next.publicUrl,
+      localServiceUrl: next.localServiceUrl,
+      tunnelName: next.tunnelName,
+      tunnelTokenConfigured: next.tunnelTokenConfigured,
+      accessProtected: next.accessProtected
+    });
+    this.writeAppConfig();
+    return this.getPublicAccessSettings();
+  }
+
   private getAgentRow(id: string): AgentRow | null {
     return (
       (this.db
@@ -922,12 +1006,19 @@ agents:
   []
 channel_policies:
   default: manual_only
+public_access:
+  provider: cloudflare
+  mode: quick
+  public_url: null
+  local_service_url: http://localhost:3011
+  access_protected: false
 `;
   }
 
   private defaultConfigYaml(): string {
     const agents = this.listAgents();
     const channels = this.listChannelPolicies();
+    const publicAccess = this.getPublicAccessSettings();
     const agentLines = agents.length
       ? agents
           .map(
@@ -952,6 +1043,12 @@ agents:
 ${agentLines}
 channel_policies:
 ${channelLines}
+public_access:
+  provider: ${yamlValue(publicAccess.provider)}
+  mode: ${yamlValue(publicAccess.mode)}
+  public_url: ${yamlValue(publicAccess.publicUrl)}
+  local_service_url: ${yamlValue(publicAccess.localServiceUrl)}
+  access_protected: ${publicAccess.accessProtected}
 `;
   }
 
@@ -1150,6 +1247,13 @@ ${channelLines}
         summary TEXT NOT NULL,
         error TEXT,
         created_at TEXT NOT NULL
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS runtime_settings (
+        key TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       )
     `);
     this.writeAppConfig();

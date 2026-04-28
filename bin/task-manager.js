@@ -10,7 +10,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultInstallDir = path.join(homedir(), ".agent-tasks-manager");
+const defaultInstallDir = path.join(homedir(), ".agent-task-manager");
+const packageName = "@jaesong/agent-task-manager";
+const dashboardBundleRelativePath = path.join("public", "src", "main.js");
+const dashboardSourceRelativePath = path.join("src", "client", "dashboard.ts");
 const projectEntries = [
   "agent-plugin",
   "assets",
@@ -37,6 +40,9 @@ async function main(command, args) {
       break;
     case "install":
       await install(args);
+      break;
+    case "update":
+      update(args);
       break;
     case "start":
       start(args);
@@ -94,10 +100,10 @@ async function install(argv) {
 async function buildInstallConfig(options) {
   assertLocalOnly(options);
   const installDir = installPath(options);
-  const port = await resolvePort(String(option(options, "port", process.env.PORT ?? "3011")));
-  const localBaseUrl = `http://localhost:${port}`;
-  const publicBaseUrl = String(option(options, "public-url", process.env.PUBLIC_BASE_URL ?? localBaseUrl));
   const currentEnv = readEnv(installDir);
+  const port = await resolvePort(String(option(options, "port", process.env.PORT ?? currentEnv.PORT ?? "3011")));
+  const localBaseUrl = `http://localhost:${port}`;
+  const publicBaseUrl = String(option(options, "public-url", process.env.PUBLIC_BASE_URL ?? currentEnv.PUBLIC_BASE_URL ?? localBaseUrl));
   const authSecret = String(
     option(options, "auth-secret", process.env.BETTER_AUTH_SECRET ?? currentEnv.BETTER_AUTH_SECRET ?? randomSecret())
   );
@@ -131,12 +137,29 @@ function installProject(config, { printRunCommand }) {
   if (printRunCommand) console.log(`Run command: atm run --dir ${shellValue(installDir)}`);
 }
 
+function update(argv) {
+  const options = parseOptions(argv);
+  assertLocalOnly(options);
+  const installDir = installPath(options);
+  const changed = updateInstalledProject(installDir, options, {
+    force: flagEnabled(options, "force"),
+    required: true
+  });
+
+  if (!changed) {
+    const version = readPackageVersion(installDir) ?? "unknown";
+    console.log(`ATM is up to date (${version}).`);
+  }
+}
+
 function start(argv) {
   const options = parseOptions(argv);
   assertLocalOnly(options);
   const installDir = installPath(options);
 
+  maybeAutoUpdate(installDir, options);
   requireCommand("bun", "Bun is required to start ATM.");
+  ensureDashboardBundle(installDir);
   const env = { ...process.env, ...readEnv(installDir) };
   run("bun", ["src/server/index.ts"], { cwd: installDir, env });
 }
@@ -146,11 +169,13 @@ function runStack(argv) {
   assertLocalOnly(options);
   const installDir = installPath(options);
 
+  maybeAutoUpdate(installDir, options);
   startStackProcesses(installDir);
 }
 
 function startStackProcesses(installDir) {
   requireCommand("bun", "Bun is required to run ATM.");
+  ensureDashboardBundle(installDir);
   const env = { ...process.env, ...readEnv(installDir) };
   const children = [
     spawn("bun", ["src/server/index.ts"], { cwd: installDir, env, stdio: "inherit" }),
@@ -214,9 +239,15 @@ function doctor(argv) {
   const options = parseOptions(argv);
   assertLocalOnly(options);
   const installDir = installPath(options);
+  const dashboardBundlePath = path.join(installDir, dashboardBundleRelativePath);
+  const installedVersion = readPackageVersion(installDir);
+  const currentVersion = readPackageVersion(packageDir);
   const checks = [
     ["install_dir", existsSync(installDir), installDir],
-    ["bun", commandOk("bun", ["--version"]), "required to install and run ATM"]
+    ["bun", commandOk("bun", ["--version"]), "required to install and run ATM"],
+    ["dashboard_bundle", existsSync(dashboardBundlePath), dashboardBundlePath],
+    ["installed_version", Boolean(installedVersion), installedVersion ?? "missing package.json"],
+    ["cli_version", Boolean(currentVersion), currentVersion ?? "missing package.json"]
   ];
 
   for (const [name, ok, detail] of checks) {
@@ -224,14 +255,118 @@ function doctor(argv) {
   }
 }
 
+function maybeAutoUpdate(installDir, options) {
+  if (!autoUpdateEnabled(options)) return;
+  if (path.resolve(installDir) === packageDir) return;
+  if (!existsSync(path.join(installDir, "package.json"))) return;
+
+  updateInstalledProject(installDir, options, { force: false, required: false });
+}
+
+function autoUpdateEnabled(options) {
+  if (flagEnabled(options, "no-update")) return false;
+  const value = process.env.ATM_AUTO_UPDATE ?? process.env.TASK_MANAGER_AUTO_UPDATE;
+  if (value === undefined) return true;
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
+function updateInstalledProject(installDir, options, { force, required }) {
+  if (!commandOk("npm", ["--version"])) {
+    if (required) fail("npm is required to update ATM.");
+    return false;
+  }
+
+  const installedVersion = readPackageVersion(installDir);
+  const latestVersion = latestPublishedVersion();
+  if (!latestVersion) {
+    if (required) fail("Could not resolve latest ATM version from npm.");
+    return false;
+  }
+
+  if (!force && installedVersion && compareVersions(installedVersion, latestVersion) >= 0) {
+    return false;
+  }
+
+  const fromVersion = installedVersion ?? "unknown";
+  console.log(`Updating ATM from ${fromVersion} to ${latestVersion}...`);
+  runLatestInstaller(installDir, latestVersion, options);
+  return true;
+}
+
+function latestPublishedVersion() {
+  const result = spawnSync("npm", ["view", `${packageName}@latest`, "version", "--silent"], {
+    encoding: "utf8",
+    timeout: 5000
+  });
+  if (result.status !== 0) return null;
+  return result.stdout.trim().split(/\s+/).at(-1) || null;
+}
+
+function runLatestInstaller(installDir, version, options) {
+  const currentEnv = readEnv(installDir);
+  const args = ["exec", "--yes", `--package=${packageName}@${version}`, "--", "atm", "install", "--dir", installDir];
+  const port = option(options, "port", currentEnv.PORT ?? process.env.PORT);
+  const publicUrl = option(options, "public-url", currentEnv.PUBLIC_BASE_URL ?? process.env.PUBLIC_BASE_URL);
+  const authSecret = option(options, "auth-secret", currentEnv.BETTER_AUTH_SECRET ?? process.env.BETTER_AUTH_SECRET);
+
+  if (port) args.push("--port", String(port));
+  if (publicUrl) args.push("--public-url", String(publicUrl));
+  if (authSecret) args.push("--auth-secret", String(authSecret));
+
+  run("npm", args);
+}
+
+function readPackageVersion(directory) {
+  try {
+    const packageJson = JSON.parse(readFileSync(path.join(directory, "package.json"), "utf8"));
+    return typeof packageJson.version === "string" ? packageJson.version : null;
+  } catch {
+    return null;
+  }
+}
+
+function compareVersions(left, right) {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  for (let index = 0; index < 3; index += 1) {
+    const diff = leftParts[index] - rightParts[index];
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function versionParts(value) {
+  return String(value)
+    .split(/[+-]/)[0]
+    .split(".")
+    .slice(0, 3)
+    .map((part) => Number.parseInt(part, 10) || 0)
+    .concat([0, 0, 0])
+    .slice(0, 3);
+}
+
+function ensureDashboardBundle(installDir) {
+  const bundlePath = path.join(installDir, dashboardBundleRelativePath);
+  if (existsSync(bundlePath)) return;
+
+  const sourcePath = path.join(installDir, dashboardSourceRelativePath);
+  if (!existsSync(sourcePath)) {
+    fail(`Dashboard bundle is missing at ${bundlePath}, and ${sourcePath} is unavailable. Reinstall ATM.`);
+  }
+
+  console.log("Dashboard bundle is missing. Building dashboard client...");
+  run("bun", ["run", "build:client"], { cwd: installDir });
+}
+
 function help() {
-  console.log(`ATM · Agent Tasks Manager
+  console.log(`ATM · Agent Task Manager
 
 Usage:
   atm setup   [--dir PATH] [--port 3011|auto] [--public-url URL] [--open]
   atm install [--dir PATH] [--port 3011|auto] [--public-url URL]
-  atm start   [--dir PATH]
-  atm run     [--dir PATH]
+  atm update  [--dir PATH] [--force]
+  atm start   [--dir PATH] [--no-update]
+  atm run     [--dir PATH] [--no-update]
   atm worker  [--dir PATH]
   atm stop    [--dir PATH]
   atm uninstall [--dir PATH] [--remove-data]
@@ -323,7 +458,9 @@ function parseOptions(argv) {
 }
 
 function installPath(options) {
-  return path.resolve(String(option(options, "dir", process.env.TASK_MANAGER_DIR ?? defaultInstallDir)));
+  const explicit = option(options, "dir", process.env.TASK_MANAGER_DIR);
+  if (explicit) return path.resolve(String(explicit));
+  return path.resolve(defaultInstallDir);
 }
 
 function option(options, key, fallback) {

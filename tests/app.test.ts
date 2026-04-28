@@ -24,6 +24,18 @@ describe("task-manager core", () => {
     const unauthenticated = await request(runtime, "/api/tasks");
     expect(unauthenticated.status).toBe(401);
 
+    const invalidAdmin = await request(runtime, "/api/setup/admin", {
+      method: "POST",
+      body: {
+        email: "admin@localhost",
+        password: "password123"
+      }
+    });
+    expect(invalidAdmin.status).toBe(400);
+    expect(await invalidAdmin.json()).toMatchObject({
+      error: "A valid admin email is required, for example admin@example.com"
+    });
+
     const setup = await request(runtime, "/api/setup/admin", {
       method: "POST",
       body: {
@@ -35,6 +47,43 @@ describe("task-manager core", () => {
     const setupBody = await setup.json();
     expect(setupBody.setupLocked).toBe(true);
 
+    const reviewed = await request(runtime, "/api/setup/review", {
+      method: "PATCH",
+      token: setupBody.token,
+      body: { slackPermissionsReviewed: true }
+    });
+    expect(reviewed.status).toBe(200);
+    const reviewedBody = await reviewed.json();
+    expect(reviewedBody.review.slackPermissionsReviewedAt).toBeTruthy();
+
+    const setupStatus = await request(runtime, "/api/setup/status");
+    const setupStatusBody = await setupStatus.json();
+    expect(setupStatusBody.review.slackPermissionsReviewedAt).toBe(reviewedBody.review.slackPermissionsReviewedAt);
+
+    const publicAccess = await request(runtime, "/api/setup/public-access", {
+      method: "PATCH",
+      token: setupBody.token,
+      body: {
+        mode: "remote",
+        publicUrl: "https://tasks.example.com",
+        localServiceUrl: "http://localhost:3011",
+        tunnelName: "agent-task-manager",
+        tunnelToken: "cloudflared service install cf_tunnel_token_123456789",
+        accessProtected: true
+      }
+    });
+    expect(publicAccess.status).toBe(200);
+    const publicAccessBody = await publicAccess.json();
+    expect(publicAccessBody.publicAccess.tunnelTokenConfigured).toBe(true);
+    expect(publicAccessBody.publicAccess.tunnelTokenPreview).toBe("cf_tunne...6789");
+    expect(publicAccessBody.guide.quickTunnelCommand).toBe("cloudflared tunnel --url http://localhost:3011");
+    expect(publicAccessBody.guide.serviceInstallCommand).toContain("cf_tunnel_token_123456789");
+
+    const publicAccessStatus = await request(runtime, "/api/setup/status");
+    const publicAccessStatusBody = await publicAccessStatus.json();
+    expect(publicAccessStatusBody.publicAccess.publicUrl).toBe("https://tasks.example.com");
+    expect(publicAccessStatusBody.publicAccess.accessProtected).toBe(true);
+
     const secondSetup = await request(runtime, "/api/setup/admin", {
       method: "POST",
       body: {
@@ -43,6 +92,17 @@ describe("task-manager core", () => {
       }
     });
     expect(secondSetup.status).toBe(409);
+
+    const reporterOwner = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: setupBody.token,
+      body: {
+        ownerName: "PM",
+        slackUserId: "U_PM",
+        aliases: ["pm"]
+      }
+    });
+    expect(reporterOwner.status).toBe(200);
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
@@ -69,6 +129,16 @@ describe("task-manager core", () => {
     expect(createdBody.task.nextAction).toBe("Draft rollout note");
     expect(createdBody.task.githubRef).toBe("acme/web#12");
     expect(existsSync(createdBody.task.markdownPath)).toBe(true);
+
+    const invalidOwner = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: setupBody.token,
+      body: {
+        title: "Invalid owner",
+        assignee: "not-a-slack-user"
+      }
+    });
+    expect(invalidOwner.status).toBe(400);
 
     const updated = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
       method: "PATCH",

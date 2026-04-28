@@ -1,6 +1,6 @@
-# Agent Tasks Manager
+# Agent Task Manager
 
-Agent Tasks Manager, or ATM, is a self-hosted task layer for teams that already run an agent in Slack.
+Agent Task Manager, or ATM, is a self-hosted task layer for teams that already run an agent in Slack.
 
 ATM does not add another Slack bot. Your existing Hermes/OpenClaw-style agent keeps Slack Socket Mode, message reads, thread replies, and DMs. ATM stores task state, serves the dashboard, manages plugin credentials, and returns Slack actions for the agent to execute.
 
@@ -51,7 +51,7 @@ agent-plugin/                       Hermes and OpenClaw plugin packages
 ## Quick Start
 
 ```bash
-npx agent-tasks-manager setup --open
+npx @jaesong/agent-task-manager setup --open
 ```
 
 Open:
@@ -63,8 +63,26 @@ http://localhost:3011/setup
 Use a different port when needed:
 
 ```bash
-npx agent-tasks-manager setup --port auto --open
+npx @jaesong/agent-task-manager setup --port auto --open
 ```
+
+## Updates
+
+Installed ATM copies update themselves before `atm start` and `atm run`. The CLI checks the latest npm release, preserves the install directory data and `.env`, rebuilds the dashboard, then starts the service. Running processes are not hot-swapped; the update applies on the next start.
+
+Run an update explicitly:
+
+```bash
+atm update
+```
+
+Disable the startup check for one run:
+
+```bash
+atm run --no-update
+```
+
+Set `ATM_AUTO_UPDATE=false` to disable startup update checks for that environment.
 
 Repository development:
 

@@ -26,6 +26,10 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
       const input = asRecord(body);
       const title = stringValue(input.title);
       if (!title) return jsonResponse({ error: "Task title is required" }, 400);
+      const assignee = slackOwnerName(store, input.assignee, "Assignee");
+      if (assignee instanceof Response) return assignee;
+      const reporter = slackOwnerName(store, input.reporter, "Reporter");
+      if (reporter instanceof Response) return reporter;
 
       const status = parseTaskState(input.status) ?? "confirmed";
       const result = store.createTask({
@@ -33,8 +37,8 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
         description: stringValue(input.description) ?? "",
         status,
         priority: parseTaskPriority(input.priority) ?? "P2",
-        assignee: stringValue(input.assignee),
-        reporter: stringValue(input.reporter),
+        assignee,
+        reporter,
         notify: booleanValue(input.notify) ?? true,
         initiative: stringValue(input.initiative),
         nextAction: stringValue(input.nextAction),
@@ -76,13 +80,17 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
       const description = typeof input.description === "string" ? input.description : null;
       const status = parseTaskState(input.status);
       const priority = parseTaskPriority(input.priority);
+      const assignee = "assignee" in input ? slackOwnerName(store, input.assignee, "Assignee") : undefined;
+      if (assignee instanceof Response) return assignee;
+      const reporter = "reporter" in input ? slackOwnerName(store, input.reporter, "Reporter") : undefined;
+      if (reporter instanceof Response) return reporter;
 
       if (title) update.title = title;
       if (description !== null) update.description = description;
       if (status) update.status = status;
       if (priority) update.priority = priority;
-      if ("assignee" in input) update.assignee = stringValue(input.assignee);
-      if ("reporter" in input) update.reporter = stringValue(input.reporter);
+      if (assignee !== undefined) update.assignee = assignee;
+      if (reporter !== undefined) update.reporter = reporter;
       if ("notify" in input) update.notify = booleanValue(input.notify) ?? true;
       if ("initiative" in input) update.initiative = stringValue(input.initiative);
       if ("nextAction" in input) update.nextAction = stringValue(input.nextAction);
@@ -94,4 +102,18 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
       if (!task) return jsonResponse({ error: "Task not found" }, 404);
       return { task };
     });
+}
+
+function slackOwnerName(
+  store: ServerContext["store"],
+  value: unknown,
+  field: "Assignee" | "Reporter"
+): string | null | Response {
+  const raw = stringValue(value);
+  if (!raw) return null;
+  const owner = store.resolveOwner(raw);
+  if (!owner?.slackUserId) {
+    return jsonResponse({ error: `${field} must be selected from active Slack users in Settings.` }, 400);
+  }
+  return owner.ownerName;
 }
