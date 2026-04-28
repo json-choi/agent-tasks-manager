@@ -51,15 +51,19 @@ agent-plugin/                       Hermes and OpenClaw plugin packages
 ## Quick Start
 
 ```bash
-npm install -g agent-tasks-manager
-atm install --port 3011
-atm run
+npx agent-tasks-manager setup --open
 ```
 
 Open:
 
 ```text
 http://localhost:3011/setup
+```
+
+Use a different port when needed:
+
+```bash
+npx agent-tasks-manager setup --port auto --open
 ```
 
 Repository development:
