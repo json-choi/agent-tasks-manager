@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { adapterFor } from "../../adapters/agent-adapter";
 import type { ServerContext } from "../../context";
+import { syncTaskToGitHub } from "../../services/github-sync.service";
 import {
   filterCardTasks,
   inferPriorityFromText,
@@ -10,9 +11,10 @@ import {
   renderTaskCardsText,
   renderThreadDescription
 } from "../../services/slack-task.service";
+import { inferTaskCategory } from "../../services/task-classification.service";
 import { parseTaskPriority, parseTaskState, signalToStatus } from "../../shared/parsers";
-import type { TaskState } from "../../shared/types";
-import { asRecord, booleanValue, jsonResponse, numberValue, stringValue } from "../../shared/utils";
+import type { AgentSettings, AssignmentRequest, OwnerMapping, SlackAction, Task, TaskState } from "../../shared/types";
+import { asRecord, booleanValue, jsonResponse, numberValue, safeJsonParse, stringValue } from "../../shared/utils";
 
 export function agentApiController({ store, requireAgent }: ServerContext) {
   return new Elysia({ name: "agent-api.controller" })
@@ -55,7 +57,7 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         cursor: store.getSlackCursor(auth.agent.id, channelId)
       };
     })
-    .post("/api/agent/slack/digest/commit", ({ request, body }) => {
+    .post("/api/agent/slack/digest/commit", async ({ request, body }) => {
       const auth = requireAgent(request);
       if ("response" in auth) return auth.response;
 
@@ -76,10 +78,19 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
           auth.agent,
           selectedCandidateIds ? { ...commitInput, selectedCandidateIds } : commitInput
         );
+        const githubSettings = store.getGitHubSettings();
+        const categorizedTasks = result.tasks.map((task) => {
+          const category = inferTaskCategory(task, githubSettings);
+          return task.category === category ? task : store.updateTask(task.id, { category }) ?? task;
+        });
+        const githubSync = await Promise.all(categorizedTasks.map((task) => syncTaskToGitHub(store, task, githubSettings)));
+        const tasks = categorizedTasks.map((task) => store.getTask(task.id) ?? task);
         return {
           ok: true,
           ...result,
-          actions: result.tasks.map((task) => adapterFor(auth.agent.type).createTask(task, false)).flat()
+          tasks,
+          githubSync,
+          actions: tasks.map((task) => adapterFor(auth.agent.type).createTask(task, false)).flat()
         };
       } catch (error) {
         return jsonResponse({ error: error instanceof Error ? error.message : "Digest commit failed" }, 404);
@@ -101,7 +112,7 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         actions: adapter.captureThread(context)
       };
     })
-    .post("/api/agent/task/propose", ({ request, body }) => {
+    .post("/api/agent/task/propose", async ({ request, body }) => {
       const auth = requireAgent(request);
       if ("response" in auth) return auth.response;
 
@@ -127,18 +138,30 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       const title = explicitTitle ?? inferTitle(context);
       const description = stringValue(input.description) ?? renderThreadDescription(context);
       const confirmed = booleanValue(input.confirmed) === true;
+      const githubRef = stringValue(input.githubRef);
+      const initiative = stringValue(input.initiative);
+      const requestedAssignee = stringValue(input.assignee);
+      const suggestedOwner = requestedAssignee ? resolveAssignmentOwner(store, requestedAssignee) : null;
+      if (requestedAssignee && !suggestedOwner) {
+        return jsonResponse({ error: "Assignee must match an active owner with a Slack user ID." }, 400);
+      }
+      const category = inferTaskCategory(
+        { category: input.category, title, description, initiative, githubRef },
+        store.getGitHubSettings()
+      );
       const result = store.createTask({
         title,
         description,
         status: confirmed ? "confirmed" : "proposed",
         priority: parseTaskPriority(input.priority) ?? inferPriorityFromText(`${title} ${description}`),
-        assignee: stringValue(input.assignee),
+        category,
+        assignee: suggestedOwner?.ownerName ?? null,
         reporter: stringValue(input.reporter) ?? context.authorName ?? context.authorId ?? null,
         notify: booleanValue(input.notify) ?? true,
-        initiative: stringValue(input.initiative),
+        initiative,
         nextAction: stringValue(input.nextAction),
         result: stringValue(input.result),
-        githubRef: stringValue(input.githubRef),
+        githubRef,
         channelId: context.channelId ?? null,
         threadTs: context.threadTs ?? null,
         sourceAgentId: auth.agent.id,
@@ -148,14 +171,24 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         dueAt: stringValue(input.dueAt),
         dedupeKey: store.buildDedupeKey(context)
       });
+      const githubSync = await syncTaskToGitHub(store, result.task);
+      let task = store.getTask(result.task.id) ?? result.task;
 
       const adapter = adapterFor(auth.agent.type);
+      const assignment = suggestedOwner && !result.duplicate
+        ? createAssignmentRequestForOwner(store, auth.agent, task, suggestedOwner, {
+            requestedBy: context.authorId ?? context.authorName ?? null
+          })
+        : null;
+      if (assignment) task = assignment.task;
       return {
         ok: true,
         duplicate: result.duplicate,
         channelMode,
-        task: result.task,
-        actions: adapter.createTask(result.task, result.duplicate)
+        task,
+        githubSync,
+        assignmentRequest: assignment?.assignmentRequest,
+        actions: [...adapter.createTask(task, result.duplicate), ...(assignment?.actions ?? [])]
       };
     })
     .post("/api/agent/task/:id/assignment-response", ({ request, params, body }) => {
@@ -164,23 +197,66 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
 
       const input = asRecord(body);
       const accepted = booleanValue(input.accepted);
-      const assignee = stringValue(input.assigneeId) ?? stringValue(input.assignee);
+      const delegateOwnerId = stringValue(input.delegateOwnerId) ?? stringValue(input.delegateToOwnerId);
+      const delegateAssignee =
+        stringValue(input.delegateAssigneeId) ??
+        stringValue(input.delegateTo) ??
+        stringValue(input.assigneeId) ??
+        stringValue(input.assignee);
       const current = store.getTask(params.id);
       if (!current) return jsonResponse({ error: "Task not found" }, 404);
 
-      const nextStatus: TaskState =
-        accepted === true ? "in_progress" : accepted === false ? "blocked" : "assigning";
-      const task = store.updateTask(params.id, {
-        status: nextStatus,
-        assignee: assignee ?? current.assignee
-      });
+      const pendingRequest = stringValue(input.requestId)
+        ? store.getAssignmentRequest(stringValue(input.requestId)!)
+        : null;
+      if (pendingRequest && pendingRequest.status !== "pending") {
+        return jsonResponse({ error: "Assignment request is no longer pending." }, 409);
+      }
+      let task: Task | null = null;
+      let actions: SlackAction[] = [];
+
+      if (accepted === true) {
+        task = store.updateTask(params.id, {
+          status: "in_progress",
+          assignee: pendingRequest?.ownerName ?? current.assignee ?? delegateAssignee ?? null
+        });
+        if (pendingRequest) {
+          store.updateAssignmentRequest(pendingRequest.id, {
+            status: "accepted",
+            responseText: stringValue(input.text)
+          });
+        }
+      } else if (accepted === false && (delegateOwnerId || delegateAssignee)) {
+        const owner = resolveAssignmentOwner(store, delegateOwnerId ?? delegateAssignee);
+        if (!owner) return jsonResponse({ error: "Delegate owner must be an active owner with a Slack user ID." }, 400);
+        if (pendingRequest) {
+          store.updateAssignmentRequest(pendingRequest.id, {
+            status: "delegated",
+            responseText: stringValue(input.text)
+          });
+        }
+        const result = createAssignmentRequestForOwner(store, auth.agent, current, owner, {
+          previousRequestId: pendingRequest?.id ?? null,
+          requestedBy: pendingRequest?.ownerName ?? stringValue(input.requestedBy)
+        });
+        task = result.task;
+        actions = result.actions;
+      } else {
+        task = store.updateTask(params.id, { status: accepted === false ? "blocked" : "assigning" });
+        if (pendingRequest) store.updateAssignmentRequest(pendingRequest.id, {
+          status: accepted === false ? "declined" : "pending",
+          responseText: stringValue(input.text)
+        });
+      }
       if (!task) return jsonResponse({ error: "Task not found" }, 404);
 
       store.markAgentSeen(auth.agent.id);
       store.recordEvent(auth.agent.id, "agent.task.assignment_response", {
         taskId: task.id,
         accepted,
-        assignee,
+        requestId: pendingRequest?.id ?? null,
+        delegateOwnerId,
+        delegateAssignee,
         text: stringValue(input.text)
       });
 
@@ -188,12 +264,14 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       return {
         ok: true,
         task,
-        actions: adapter.postTaskUpdate(
-          task,
-          accepted === true
-            ? `${task.id} assigned to ${task.assignee ?? "the requested owner"} and moved to in_progress.`
-            : `${task.id} assignment needs attention.`
-        )
+        actions: actions.length
+          ? actions
+          : adapter.postTaskUpdate(
+              task,
+              accepted === true
+                ? `${task.id} assigned to ${task.assignee ?? "the requested owner"} and moved to in_progress.`
+                : `${task.id} assignment needs attention.`
+            )
       };
     })
     .post("/api/agent/task/:id/ask-assignee", ({ request, params, body }) => {
@@ -205,22 +283,119 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       if (!task) return jsonResponse({ error: "Task not found" }, 404);
 
       const assignee = stringValue(input.assigneeId) ?? stringValue(input.assignee);
-      const updated = store.updateTask(task.id, {
-        status: "assigning",
-        assignee: assignee ?? task.assignee
+      const owner = resolveAssignmentOwner(store, assignee);
+      if (!owner) return jsonResponse({ error: "Assignee must be an active owner with a Slack user ID." }, 400);
+      const result = createAssignmentRequestForOwner(store, auth.agent, task, owner, {
+        requestedBy: stringValue(input.requestedBy)
       });
-      if (!updated) return jsonResponse({ error: "Task not found" }, 404);
 
       store.markAgentSeen(auth.agent.id);
       store.recordEvent(auth.agent.id, "agent.task.ask_assignee", {
         taskId: task.id,
-        assignee
+        assignee,
+        ownerId: owner.id,
+        requestId: result.assignmentRequest.id
       });
 
       return {
         ok: true,
+        task: result.task,
+        assignmentRequest: result.assignmentRequest,
+        actions: result.actions
+      };
+    })
+    .post("/api/agent/task/:id/assignment-request", ({ request, params, body }) => {
+      const auth = requireAgent(request);
+      if ("response" in auth) return auth.response;
+
+      const input = asRecord(body);
+      const task = store.getTask(params.id);
+      if (!task) return jsonResponse({ error: "Task not found" }, 404);
+      const owner = resolveAssignmentOwner(
+        store,
+        stringValue(input.ownerId) ?? stringValue(input.assigneeId) ?? stringValue(input.assignee)
+      );
+      if (!owner) return jsonResponse({ error: "Assignee must be an active owner with a Slack user ID." }, 400);
+      const result = createAssignmentRequestForOwner(store, auth.agent, task, owner, {
+        previousRequestId: stringValue(input.previousRequestId),
+        requestedBy: stringValue(input.requestedBy)
+      });
+      store.markAgentSeen(auth.agent.id);
+      store.recordEvent(auth.agent.id, "agent.task.assignment_request", {
+        taskId: result.task.id,
+        ownerId: owner.id,
+        requestId: result.assignmentRequest.id
+      });
+      return { ok: true, ...result };
+    })
+    .post("/api/agent/slack/interaction", ({ request, body }) => {
+      const auth = requireAgent(request);
+      if ("response" in auth) return auth.response;
+
+      const interaction = parseAssignmentInteraction(body);
+      if (!interaction.requestId) return jsonResponse({ error: "assignment request id is required" }, 400);
+      const assignmentRequest = store.getAssignmentRequest(interaction.requestId);
+      if (!assignmentRequest) return jsonResponse({ error: "Assignment request not found" }, 404);
+      if (assignmentRequest.status !== "pending") {
+        return jsonResponse({ error: "Assignment request is no longer pending." }, 409);
+      }
+      const task = store.getTask(assignmentRequest.taskId);
+      if (!task) return jsonResponse({ error: "Task not found" }, 404);
+
+      const adapter = adapterFor(auth.agent.type);
+      store.markAgentSeen(auth.agent.id);
+      store.recordEvent(auth.agent.id, "agent.slack.interaction", {
+        taskId: task.id,
+        requestId: assignmentRequest.id,
+        action: interaction.action,
+        delegateOwnerId: interaction.delegateOwnerId
+      });
+      if (interaction.action === "accept") {
+        const updated = store.updateTask(task.id, {
+          status: "in_progress",
+          assignee: assignmentRequest.ownerName ?? task.assignee
+        });
+        const updatedRequest = store.updateAssignmentRequest(assignmentRequest.id, {
+          status: "accepted",
+          responseText: interaction.responseText
+        });
+        if (!updated) return jsonResponse({ error: "Task not found" }, 404);
+        return {
+          ok: true,
+          task: updated,
+          assignmentRequest: updatedRequest,
+          actions: adapter.postTaskUpdate(updated, `${updated.id} accepted by ${updated.assignee ?? "the assignee"}.`)
+        };
+      }
+
+      if (interaction.action === "delegate") {
+        const owner = resolveAssignmentOwner(store, interaction.delegateOwnerId);
+        if (!owner) return jsonResponse({ error: "Delegate owner must be an active owner with a Slack user ID." }, 400);
+        if (owner.id === assignmentRequest.ownerId) {
+          return jsonResponse({ error: "Delegate owner must be different from the current requested owner." }, 400);
+        }
+        store.updateAssignmentRequest(assignmentRequest.id, {
+          status: "delegated",
+          responseText: interaction.responseText
+        });
+        const result = createAssignmentRequestForOwner(store, auth.agent, task, owner, {
+          previousRequestId: assignmentRequest.id,
+          requestedBy: assignmentRequest.ownerName
+        });
+        return { ok: true, ...result };
+      }
+
+      const updated = store.updateTask(task.id, { status: "blocked" });
+      const updatedRequest = store.updateAssignmentRequest(assignmentRequest.id, {
+        status: "declined",
+        responseText: interaction.responseText
+      });
+      if (!updated) return jsonResponse({ error: "Task not found" }, 404);
+      return {
+        ok: true,
         task: updated,
-        actions: adapterFor(auth.agent.type).askAssignee(updated, assignee ?? updated.assignee)
+        assignmentRequest: updatedRequest,
+        actions: adapter.postTaskUpdate(updated, `${updated.id} was declined by ${assignmentRequest.ownerName ?? "the assignee"}.`)
       };
     })
     .post("/api/agent/task/:id/status-signal", ({ request, params, body }) => {
@@ -267,6 +442,16 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
         ok: true,
         task: updated,
         actions: adapter.postTaskUpdate(updated)
+      };
+    })
+    .get("/api/agent/owners", ({ request }) => {
+      const auth = requireAgent(request);
+      if ("response" in auth) return auth.response;
+
+      store.markAgentSeen(auth.agent.id);
+      return {
+        ok: true,
+        owners: store.listOwners().filter((owner) => owner.active && owner.slackUserId)
       };
     })
     .get("/api/agent/tasks/today", ({ request, query }) => {
@@ -357,4 +542,94 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       if (!item) return jsonResponse({ error: "Outbox item not found" }, 404);
       return { ok: true, outbox: item };
     });
+}
+
+function resolveAssignmentOwner(store: ServerContext["store"], value: string | null | undefined): OwnerMapping | null {
+  if (!value) return null;
+  const ownerById = store.listOwners().find((owner) => owner.id === value && owner.active && owner.slackUserId);
+  const resolved = ownerById ?? store.resolveOwner(value);
+  return resolved?.active && resolved.slackUserId ? resolved : null;
+}
+
+function createAssignmentRequestForOwner(
+  store: ServerContext["store"],
+  agent: AgentSettings,
+  task: Task,
+  owner: OwnerMapping,
+  input: { previousRequestId?: string | null; requestedBy?: string | null } = {}
+): { task: Task; assignmentRequest: AssignmentRequest; actions: SlackAction[] } {
+  if (!owner.slackUserId) throw new Error("Assignment owner must have a Slack user ID.");
+  const updated = store.updateTask(task.id, {
+    status: "assigning",
+    assignee: owner.ownerName
+  });
+  if (!updated) throw new Error("Task not found");
+  const requestInput = {
+    taskId: updated.id,
+    agentId: agent.id,
+    owner,
+    ...(input.previousRequestId !== undefined ? { previousRequestId: input.previousRequestId } : {}),
+    ...(input.requestedBy !== undefined ? { requestedBy: input.requestedBy } : {})
+  };
+  const assignmentRequest = store.createAssignmentRequest(requestInput);
+  const actions = adapterFor(agent.type).requestAssignment(
+    updated,
+    owner,
+    assignmentRequest.id,
+    store.listOwners()
+  );
+  return { task: updated, assignmentRequest, actions };
+}
+
+function parseAssignmentInteraction(value: unknown): {
+  requestId: string | null;
+  action: "accept" | "decline" | "delegate";
+  delegateOwnerId: string | null;
+  responseText: string | null;
+} {
+  const input = typeof value === "string" ? safeJsonParse<Record<string, unknown>>(value, {}) : asRecord(value);
+  const payloadSource = input.payload ?? input;
+  const payload = typeof payloadSource === "string"
+    ? safeJsonParse<Record<string, unknown>>(payloadSource, {})
+    : asRecord(payloadSource);
+  const explicitAction = stringValue(input.action) ?? stringValue(payload.action);
+  const actions = Array.isArray(payload.actions) ? payload.actions.map(asRecord) : [];
+  const firstAction = actions[0] ?? {};
+  const actionId = stringValue(firstAction.action_id) ?? explicitAction;
+  const requestId =
+    stringValue(input.requestId) ??
+    stringValue(payload.requestId) ??
+    stringValue(firstAction.value) ??
+    assignmentRequestIdFromBlockId(stringValue(firstAction.block_id));
+  const delegateOwnerId =
+    stringValue(input.delegateOwnerId) ??
+    stringValue(input.delegateToOwnerId) ??
+    stringValue(asRecord(firstAction.selected_option).value) ??
+    selectedDelegateFromState(payload);
+  const responseText = stringValue(input.text) ?? stringValue(input.responseText);
+
+  if (explicitAction === "accept" || actionId === "atm_assignment_accept") {
+    return { requestId, action: "accept", delegateOwnerId: null, responseText };
+  }
+  if (explicitAction === "delegate" || actionId === "atm_assignment_delegate_select") {
+    return { requestId, action: "delegate", delegateOwnerId, responseText };
+  }
+  return { requestId, action: "decline", delegateOwnerId: null, responseText };
+}
+
+function assignmentRequestIdFromBlockId(blockId: string | null): string | null {
+  if (!blockId) return null;
+  return /^atm_assignment(?:_delegate)?_(asn_[a-z0-9_]+)$/i.exec(blockId)?.[1] ?? null;
+}
+
+function selectedDelegateFromState(payload: Record<string, unknown>): string | null {
+  const values = asRecord(asRecord(payload.state).values);
+  for (const block of Object.values(values)) {
+    const actions = asRecord(block);
+    for (const actionValue of Object.values(actions)) {
+      const selected = stringValue(asRecord(asRecord(actionValue).selected_option).value);
+      if (selected) return selected;
+    }
+  }
+  return null;
 }

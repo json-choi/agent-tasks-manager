@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "agent-tasks-manager",
+      "package-name": "@jaesong/agent-task-manager",
       "changelog-path": "CHANGELOG.md",
       "include-v-in-tag": true
     }

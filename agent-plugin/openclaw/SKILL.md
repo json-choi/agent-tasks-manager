@@ -16,7 +16,9 @@ TASK_MANAGER_API_TOKEN=<token shown once>
 Behavior:
 
 - Convert explicit task commands into `POST /api/agent/task/propose`.
+- Use `GET /api/agent/owners` when owner mappings are needed for automatic assignment.
 - Ask assignees through `POST /api/agent/task/:id/ask-assignee`.
+- Forward Slack block actions through `POST /api/agent/slack/interaction`.
 - Send completion/status signals through `POST /api/agent/task/:id/status-signal`.
 - Poll `GET /api/agent/outbox` if the OpenClaw runtime supports scheduled plugin work.
 

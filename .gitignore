@@ -6,4 +6,6 @@ data/
 *.log
 *.tgz
 .DS_Store
+__pycache__/
+*.pyc
 public/src/main.js

@@ -1,7 +1,9 @@
 import { Elysia } from "elysia";
 import type { ServerContext } from "../../context";
-import { parseTaskPriority, parseTaskState } from "../../shared/parsers";
-import type { TaskPriority, TaskState } from "../../shared/types";
+import { syncTaskToGitHub } from "../../services/github-sync.service";
+import { inferTaskCategory } from "../../services/task-classification.service";
+import { parseTaskCategory, parseTaskPriority, parseTaskState } from "../../shared/parsers";
+import type { TaskCategory, TaskPriority, TaskState } from "../../shared/types";
 import { asRecord, booleanValue, jsonResponse, stringValue } from "../../shared/utils";
 
 export function tasksController({ store, requireAdmin }: ServerContext) {
@@ -26,24 +28,34 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
       const input = asRecord(body);
       const title = stringValue(input.title);
       if (!title) return jsonResponse({ error: "Task title is required" }, 400);
+      const description = stringValue(input.description) ?? "";
+      const initiative = stringValue(input.initiative);
+      const githubRef = stringValue(input.githubRef);
+      const assignee = slackOwnerName(store, input.assignee, "Assignee");
+      if (assignee instanceof Response) return assignee;
+      const reporter = slackOwnerName(store, input.reporter, "Reporter");
+      if (reporter instanceof Response) return reporter;
 
       const status = parseTaskState(input.status) ?? "confirmed";
       const result = store.createTask({
         title,
-        description: stringValue(input.description) ?? "",
+        description,
         status,
         priority: parseTaskPriority(input.priority) ?? "P2",
-        assignee: stringValue(input.assignee),
-        reporter: stringValue(input.reporter),
+        category: inferTaskCategory({ category: input.category, title, description, initiative, githubRef }, store.getGitHubSettings()),
+        assignee,
+        reporter,
         notify: booleanValue(input.notify) ?? true,
-        initiative: stringValue(input.initiative),
+        initiative,
         nextAction: stringValue(input.nextAction),
         result: stringValue(input.result),
-        githubRef: stringValue(input.githubRef),
+        githubRef,
         dueAt: stringValue(input.dueAt)
       });
+      const githubSync = await syncTaskToGitHub(store, result.task);
+      const task = store.getTask(result.task.id) ?? result.task;
 
-      return jsonResponse({ task: result.task, duplicate: result.duplicate }, 201);
+      return jsonResponse({ task, duplicate: result.duplicate, githubSync }, 201);
     })
     .get("/api/tasks/:id", async ({ request, params }) => {
       const auth = await requireAdmin(request);
@@ -63,6 +75,7 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
         description?: string;
         status?: TaskState;
         priority?: TaskPriority;
+        category?: TaskCategory;
         assignee?: string | null;
         reporter?: string | null;
         notify?: boolean;
@@ -76,22 +89,47 @@ export function tasksController({ store, requireAdmin }: ServerContext) {
       const description = typeof input.description === "string" ? input.description : null;
       const status = parseTaskState(input.status);
       const priority = parseTaskPriority(input.priority);
+      const category = parseTaskCategory(input.category);
+      const assignee = "assignee" in input ? slackOwnerName(store, input.assignee, "Assignee") : undefined;
+      if (assignee instanceof Response) return assignee;
+      const reporter = "reporter" in input ? slackOwnerName(store, input.reporter, "Reporter") : undefined;
+      if (reporter instanceof Response) return reporter;
 
       if (title) update.title = title;
       if (description !== null) update.description = description;
       if (status) update.status = status;
       if (priority) update.priority = priority;
-      if ("assignee" in input) update.assignee = stringValue(input.assignee);
-      if ("reporter" in input) update.reporter = stringValue(input.reporter);
+      if (category) update.category = category;
+      if (assignee !== undefined) update.assignee = assignee;
+      if (reporter !== undefined) update.reporter = reporter;
       if ("notify" in input) update.notify = booleanValue(input.notify) ?? true;
       if ("initiative" in input) update.initiative = stringValue(input.initiative);
       if ("nextAction" in input) update.nextAction = stringValue(input.nextAction);
       if ("result" in input) update.result = stringValue(input.result);
-      if ("githubRef" in input) update.githubRef = stringValue(input.githubRef);
+      if ("githubRef" in input) {
+        const githubRef = stringValue(input.githubRef);
+        update.githubRef = githubRef;
+        if (githubRef && !category) update.category = "coding";
+      }
       if ("dueAt" in input) update.dueAt = stringValue(input.dueAt);
 
       const task = store.updateTask(params.id, update);
       if (!task) return jsonResponse({ error: "Task not found" }, 404);
-      return { task };
+      const githubSync = await syncTaskToGitHub(store, task);
+      return { task: store.getTask(task.id) ?? task, githubSync };
     });
+}
+
+function slackOwnerName(
+  store: ServerContext["store"],
+  value: unknown,
+  field: "Assignee" | "Reporter"
+): string | null | Response {
+  const raw = stringValue(value);
+  if (!raw) return null;
+  const owner = store.resolveOwner(raw);
+  if (!owner?.slackUserId) {
+    return jsonResponse({ error: `${field} must be selected from active Slack users in Settings.` }, 400);
+  }
+  return owner.ownerName;
 }

@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+
 export interface TaskManagerClientOptions {
   apiUrl: string;
   agentId: string;
@@ -23,7 +25,7 @@ export interface SlackMessageContext {
 }
 
 export type TaskCommand =
-  | { type: "propose" }
+  | { type: "propose"; assigneeId: string | null }
   | { type: "ask_assignee"; taskId: string | null; assigneeId: string | null }
   | { type: "status"; taskId: string | null; signal: string }
   | { type: "today"; assigneeId: string | null }
@@ -57,6 +59,7 @@ export class TaskManagerClient {
     assignee?: string;
     reporter?: string;
     priority?: "P0" | "P1" | "P2";
+    category?: "general" | "coding";
     initiative?: string;
     nextAction?: string;
     githubRef?: string;
@@ -74,6 +77,19 @@ export class TaskManagerClient {
     });
   }
 
+  assignmentRequest(taskId: string, input: {
+    ownerId?: string | null;
+    assigneeId?: string | null;
+    assignee?: string | null;
+    previousRequestId?: string | null;
+    requestedBy?: string | null;
+  }) {
+    return this.request(`/api/agent/task/${encodeURIComponent(taskId)}/assignment-request`, {
+      method: "POST",
+      body: input
+    });
+  }
+
   assignmentResponse(taskId: string, accepted: boolean, assigneeId?: string | null, text?: string) {
     return this.request(`/api/agent/task/${encodeURIComponent(taskId)}/assignment-response`, {
       method: "POST",
@@ -86,6 +102,17 @@ export class TaskManagerClient {
       method: "POST",
       body: { signal, confidence, requireConfirmation }
     });
+  }
+
+  slackInteraction(payload: unknown) {
+    return this.request("/api/agent/slack/interaction", {
+      method: "POST",
+      body: payload
+    });
+  }
+
+  owners() {
+    return this.request("/api/agent/owners", { method: "GET" });
   }
 
   today(assigneeId?: string | null, channelId?: string | null, threadTs?: string | null) {
@@ -220,7 +247,7 @@ export function classifyTaskCommand(text: string): TaskCommand {
     normalized.includes("스레드 태스크로 정리해줘") ||
     normalized.includes("make this a task")
   ) {
-    return { type: "propose" };
+    return { type: "propose", assigneeId };
   }
 
   return { type: "none" };
@@ -233,4 +260,3 @@ export function extractTaskId(text: string): string | null {
 export function extractMention(text: string): string | null {
   return /<@([A-Z0-9]+)>/i.exec(text)?.[1] ?? null;
 }
-import { existsSync, readFileSync } from "node:fs";

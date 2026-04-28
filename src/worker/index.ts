@@ -29,6 +29,11 @@ async function tick(): Promise<void> {
     changed += 1;
   }
 
+  for (const request of store.getPendingAssignmentRequestsOlderThan(60)) {
+    store.updateAssignmentRequest(request.id, { status: "expired" });
+    changed += 1;
+  }
+
   for (const task of store.getStaleInProgressOlderThan(7)) {
     const updated = store.updateTask(task.id, { status: "review_needed" });
     if (updated?.sourceAgentId) {

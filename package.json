@@ -1,24 +1,23 @@
 {
-  "name": "agent-tasks-manager",
-  "version": "0.1.0",
-  "description": "Self-hosted task manager for teams already using Hermes Agent or OpenClaw as their Slack bot.",
+  "name": "@jaesong/agent-task-manager",
+  "version": "0.1.1",
+  "description": "Self-hosted task manager for teams already using OpenClaw as their Slack bot.",
   "private": false,
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/json-choi/agent-tasks-manager.git"
+    "url": "git+https://github.com/json-choi/agent-task-manager.git"
   },
-  "homepage": "https://github.com/json-choi/agent-tasks-manager#readme",
+  "homepage": "https://github.com/json-choi/agent-task-manager#readme",
   "bugs": {
-    "url": "https://github.com/json-choi/agent-tasks-manager/issues"
+    "url": "https://github.com/json-choi/agent-task-manager/issues"
   },
   "keywords": [
     "agent",
     "slack",
     "task-manager",
     "self-hosted",
-    "hermes",
     "openclaw",
     "elysia",
     "bun"
@@ -28,8 +27,7 @@
   },
   "bin": {
     "atm": "bin/task-manager.js",
-    "agent-tasks-manager": "bin/task-manager.js",
-    "task-manager": "bin/task-manager.js"
+    "agent-task-manager": "bin/task-manager.js"
   },
   "files": [
     "agent-plugin/",
@@ -50,9 +48,9 @@
   ],
   "scripts": {
     "build": "bun run build:client",
-    "build:client": "bun build src/client/dashboard.ts --outfile public/src/main.js",
+    "build:client": "bun build src/client/dashboard.tsx --outfile public/src/main.js",
     "dev": "bun run build:client && bun --watch src/server/index.ts",
-    "start": "bun src/server/index.ts",
+    "start": "bun run build:client && bun src/server/index.ts",
     "worker": "bun src/worker/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -62,10 +60,15 @@
   "dependencies": {
     "@elysiajs/static": "latest",
     "better-auth": "^1.6.9",
-    "elysia": "latest"
+    "elysia": "latest",
+    "lucide-react": "^1.11.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "typescript": "latest"
   }
 }

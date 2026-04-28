@@ -15,11 +15,15 @@ export const taskPriorities = ["P0", "P1", "P2"] as const;
 
 export type TaskPriority = (typeof taskPriorities)[number];
 
+export const taskCategories = ["general", "coding"] as const;
+
+export type TaskCategory = (typeof taskCategories)[number];
+
 export const channelModes = ["manual_only", "suggest_only"] as const;
 
 export type ChannelMode = (typeof channelModes)[number];
 
-export const agentTypes = ["hermes", "openclaw"] as const;
+export const agentTypes = ["openclaw"] as const;
 
 export type AgentType = (typeof agentTypes)[number];
 
@@ -31,6 +35,7 @@ export interface SlackAction {
   text?: string;
   emoji?: string;
   blocks?: unknown;
+  metadata?: unknown;
 }
 
 export interface SlackThreadMessage {
@@ -58,6 +63,7 @@ export interface Task {
   description: string;
   status: TaskState;
   priority: TaskPriority;
+  category: TaskCategory;
   assignee: string | null;
   reporter: string | null;
   notify: boolean;
@@ -110,6 +116,27 @@ export interface OwnerMapping {
   updatedAt: string;
 }
 
+export type AssignmentRequestStatus = "pending" | "accepted" | "delegated" | "declined" | "expired" | "cancelled";
+
+export interface AssignmentRequest {
+  id: string;
+  taskId: string;
+  agentId: string | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  slackUserId: string | null;
+  status: AssignmentRequestStatus;
+  round: number;
+  previousRequestId: string | null;
+  requestedBy: string | null;
+  responseText: string | null;
+  slackMessageTs: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  respondedAt: string | null;
+}
+
 export interface SlackDigestCandidate {
   id: string;
   channelId: string;
@@ -160,6 +187,22 @@ export interface GitHubSettings {
   }>;
   labels: string[];
   assigneesByOwner: Record<string, string>;
+  updatedAt: string | null;
+}
+
+export interface SetupReviewSettings {
+  slackPermissionsReviewedAt: string | null;
+}
+
+export interface PublicAccessSettings {
+  provider: "cloudflare";
+  mode: "quick" | "remote";
+  publicUrl: string | null;
+  localServiceUrl: string;
+  tunnelName: string | null;
+  tunnelTokenConfigured: boolean;
+  tunnelTokenPreview: string | null;
+  accessProtected: boolean;
   updatedAt: string | null;
 }
 

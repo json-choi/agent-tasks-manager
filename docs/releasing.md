@@ -12,14 +12,16 @@ ATM uses Release Please and GitHub Actions for CI, version bumps, changelog gene
 
 Preferred setup: configure npm Trusted Publishing for this package.
 
-- Package: `agent-tasks-manager`
+- Package: `@jaesong/agent-task-manager`
 - Publisher: GitHub Actions
 - GitHub owner: `json-choi`
-- GitHub repository: `agent-tasks-manager`
+- GitHub repository: `agent-task-manager`
 - Workflow filename: `release.yml`
 - Environment name: leave blank unless the workflow is changed to use a deployment environment
 
 Fallback setup: add a repository secret named `NPM_TOKEN` containing an npm automation/granular token that can publish this package and bypass publish-time 2FA.
+
+The unscoped package name `agent-task-manager` is already registered by another npm maintainer, so releases use the scoped package name.
 
 ## Versioning
 

@@ -13,11 +13,10 @@ ATM intentionally keeps product storytelling out of the runtime dashboard. The a
 
 ## Later Guides
 
-- Hermes plugin setup
 - OpenClaw skill setup
 - Remote agent workspace setup
 - GitHub issue sync
-- Writing a new agent adapter
+- Extending the OpenClaw adapter
 - Operating ATM in production
 
 ## Current Rule

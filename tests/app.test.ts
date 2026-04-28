@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHmac } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntime } from "../src/server/app";
@@ -7,8 +8,14 @@ import type { Runtime } from "../src/server/context";
 
 const runtimes: Runtime[] = [];
 const tempDirs: string[] = [];
+const originalFetch = globalThis.fetch;
+const originalGitHubToken = process.env.GITHUB_TOKEN;
+const originalGitHubWebhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
+  restoreEnv("GITHUB_TOKEN", originalGitHubToken);
+  restoreEnv("GITHUB_WEBHOOK_SECRET", originalGitHubWebhookSecret);
   for (const runtime of runtimes.splice(0)) {
     runtime.store.close();
   }
@@ -24,6 +31,18 @@ describe("task-manager core", () => {
     const unauthenticated = await request(runtime, "/api/tasks");
     expect(unauthenticated.status).toBe(401);
 
+    const invalidAdmin = await request(runtime, "/api/setup/admin", {
+      method: "POST",
+      body: {
+        email: "admin@localhost",
+        password: "password123"
+      }
+    });
+    expect(invalidAdmin.status).toBe(400);
+    expect(await invalidAdmin.json()).toMatchObject({
+      error: "A valid admin email is required, for example admin@example.com"
+    });
+
     const setup = await request(runtime, "/api/setup/admin", {
       method: "POST",
       body: {
@@ -35,6 +54,43 @@ describe("task-manager core", () => {
     const setupBody = await setup.json();
     expect(setupBody.setupLocked).toBe(true);
 
+    const reviewed = await request(runtime, "/api/setup/review", {
+      method: "PATCH",
+      token: setupBody.token,
+      body: { slackPermissionsReviewed: true }
+    });
+    expect(reviewed.status).toBe(200);
+    const reviewedBody = await reviewed.json();
+    expect(reviewedBody.review.slackPermissionsReviewedAt).toBeTruthy();
+
+    const setupStatus = await request(runtime, "/api/setup/status");
+    const setupStatusBody = await setupStatus.json();
+    expect(setupStatusBody.review.slackPermissionsReviewedAt).toBe(reviewedBody.review.slackPermissionsReviewedAt);
+
+    const publicAccess = await request(runtime, "/api/setup/public-access", {
+      method: "PATCH",
+      token: setupBody.token,
+      body: {
+        mode: "remote",
+        publicUrl: "https://tasks.example.com",
+        localServiceUrl: "http://localhost:3011",
+        tunnelName: "agent-task-manager",
+        tunnelToken: "cloudflared service install cf_tunnel_token_123456789",
+        accessProtected: true
+      }
+    });
+    expect(publicAccess.status).toBe(200);
+    const publicAccessBody = await publicAccess.json();
+    expect(publicAccessBody.publicAccess.tunnelTokenConfigured).toBe(true);
+    expect(publicAccessBody.publicAccess.tunnelTokenPreview).toBe("cf_tunne...6789");
+    expect(publicAccessBody.guide.quickTunnelCommand).toBe("cloudflared tunnel --url http://localhost:3011");
+    expect(publicAccessBody.guide.serviceInstallCommand).toContain("cf_tunnel_token_123456789");
+
+    const publicAccessStatus = await request(runtime, "/api/setup/status");
+    const publicAccessStatusBody = await publicAccessStatus.json();
+    expect(publicAccessStatusBody.publicAccess.publicUrl).toBe("https://tasks.example.com");
+    expect(publicAccessStatusBody.publicAccess.accessProtected).toBe(true);
+
     const secondSetup = await request(runtime, "/api/setup/admin", {
       method: "POST",
       body: {
@@ -43,6 +99,17 @@ describe("task-manager core", () => {
       }
     });
     expect(secondSetup.status).toBe(409);
+
+    const reporterOwner = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: setupBody.token,
+      body: {
+        ownerName: "PM",
+        slackUserId: "U_PM",
+        aliases: ["pm"]
+      }
+    });
+    expect(reporterOwner.status).toBe(200);
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
@@ -70,6 +137,16 @@ describe("task-manager core", () => {
     expect(createdBody.task.githubRef).toBe("acme/web#12");
     expect(existsSync(createdBody.task.markdownPath)).toBe(true);
 
+    const invalidOwner = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: setupBody.token,
+      body: {
+        title: "Invalid owner",
+        assignee: "not-a-slack-user"
+      }
+    });
+    expect(invalidOwner.status).toBe(400);
+
     const updated = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
       method: "PATCH",
       token: setupBody.token,
@@ -88,13 +165,23 @@ describe("task-manager core", () => {
   test("agent token flow proposes once per Slack thread and processes assignment/status", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "hermes");
+    const agent = await createAgent(runtime, adminToken, "openclaw");
 
     const connect = await agentRequest(runtime, agent, "/api/agent/connect/test", {
       method: "POST",
       body: { source: "test" }
     });
     expect(connect.status).toBe(200);
+
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Deploy Owner",
+        slackUserId: "U222",
+        aliases: ["deploy"]
+      }
+    });
 
     const context = {
       channelId: "C123",
@@ -127,9 +214,13 @@ describe("task-manager core", () => {
       method: "POST",
       body: { assigneeId: "U222" }
     });
+    expect(ask.status).toBe(200);
     const askBody = await ask.json();
     expect(askBody.task.status).toBe("assigning");
-    expect(askBody.actions[0].text).toContain("U222");
+    expect(askBody.assignmentRequest.status).toBe("pending");
+    expect(askBody.actions[0].kind).toBe("dm");
+    expect(askBody.actions[0].userId).toBe("U222");
+    expect(askBody.actions[0].blocks).toBeTruthy();
 
     const accepted = await agentRequest(
       runtime,
@@ -137,7 +228,7 @@ describe("task-manager core", () => {
       `/api/agent/task/${proposedBody.task.id}/assignment-response`,
       {
         method: "POST",
-        body: { accepted: true, assigneeId: "U222" }
+        body: { accepted: true, requestId: askBody.assignmentRequest.id }
       }
     );
     const acceptedBody = await accepted.json();
@@ -208,7 +299,7 @@ describe("task-manager core", () => {
   test("owner mappings drive task cards and queued daily digests", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "hermes");
+    const agent = await createAgent(runtime, adminToken, "openclaw");
 
     const owner = await request(runtime, "/api/settings/owners", {
       method: "POST",
@@ -222,6 +313,12 @@ describe("task-manager core", () => {
     expect(owner.status).toBe(200);
     const ownerBody = await owner.json();
     expect(ownerBody.owner.ownerName).toBe("Alice");
+
+    const agentOwners = await agentRequest(runtime, agent, "/api/agent/owners");
+    expect(agentOwners.status).toBe(200);
+    const agentOwnersBody = await agentOwners.json();
+    expect(agentOwnersBody.owners).toHaveLength(1);
+    expect(agentOwnersBody.owners[0].slackUserId).toBe("U222");
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
@@ -263,6 +360,92 @@ describe("task-manager core", () => {
     const outbox = await agentRequest(runtime, agent, "/api/agent/outbox");
     const outboxBody = await outbox.json();
     expect(outboxBody.outbox[0].payload.actions[0].userId).toBe("U222");
+  });
+
+  test("OpenClaw assignment interactions can delegate and then accept ownership", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminToken, "openclaw");
+
+    const alice = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Alice",
+        slackUserId: "U_ALICE",
+        aliases: ["alice"]
+      }
+    });
+    const aliceBody = await alice.json();
+    const bob = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        ownerName: "Bob",
+        slackUserId: "U_BOB",
+        aliases: ["bob"]
+      }
+    });
+    const bobBody = await bob.json();
+
+    const proposed = await agentRequest(runtime, agent, "/api/agent/task/propose", {
+      method: "POST",
+      body: {
+        title: "Fix assignment interaction",
+        description: "Make ownership confirmation interactive.",
+        assignee: "Alice",
+        confirmed: true,
+        context: {
+          channelId: "C_ASSIGN",
+          threadTs: "1710000000.000500",
+          messageTs: "1710000000.000500",
+          authorId: "U_REPORTER",
+          messages: [{ userId: "U_REPORTER", text: "Alice should own this." }]
+        }
+      }
+    });
+    expect(proposed.status).toBe(200);
+    const proposedBody = await proposed.json();
+    expect(proposedBody.task.status).toBe("assigning");
+    expect(proposedBody.task.assignee).toBe("Alice");
+    expect(proposedBody.assignmentRequest.ownerId).toBe(aliceBody.owner.id);
+    expect(proposedBody.actions.at(-1).kind).toBe("dm");
+    expect(proposedBody.actions.at(-1).userId).toBe("U_ALICE");
+
+    const delegated = await agentRequest(runtime, agent, "/api/agent/slack/interaction", {
+      method: "POST",
+      body: {
+        payload: JSON.stringify({
+          actions: [
+            {
+              action_id: "atm_assignment_delegate_select",
+              block_id: `atm_assignment_${proposedBody.assignmentRequest.id}`,
+              selected_option: { value: bobBody.owner.id }
+            }
+          ]
+        }),
+        responseText: "Bob has the right context."
+      }
+    });
+    expect(delegated.status).toBe(200);
+    const delegatedBody = await delegated.json();
+    expect(delegatedBody.assignmentRequest.previousRequestId).toBe(proposedBody.assignmentRequest.id);
+    expect(delegatedBody.assignmentRequest.ownerId).toBe(bobBody.owner.id);
+    expect(delegatedBody.task.assignee).toBe("Bob");
+    expect(delegatedBody.actions[0].userId).toBe("U_BOB");
+
+    const accepted = await agentRequest(runtime, agent, "/api/agent/slack/interaction", {
+      method: "POST",
+      body: {
+        requestId: delegatedBody.assignmentRequest.id,
+        action: "accept"
+      }
+    });
+    expect(accepted.status).toBe(200);
+    const acceptedBody = await accepted.json();
+    expect(acceptedBody.assignmentRequest.status).toBe("accepted");
+    expect(acceptedBody.task.status).toBe("in_progress");
+    expect(acceptedBody.task.assignee).toBe("Bob");
   });
 
   test("Slack digest collect and commit creates low-token task proposals and advances cursor", async () => {
@@ -353,17 +536,184 @@ describe("task-manager core", () => {
     expect(syncBody.summary.reason).toBe("disabled");
   });
 
+  test("agent-created coding tasks auto-create GitHub issues", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminToken, "openclaw");
+    process.env.GITHUB_TOKEN = "gh_test_token";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoCreateIssues: true,
+        labels: ["task-manager"],
+        rules: [{ repo: "acme/web", projectLabel: "frontend", codeIndicators: ["retry"] }]
+      }
+    });
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+      });
+      return new Response(JSON.stringify({
+        number: 42,
+        html_url: "https://github.com/acme/web/issues/42",
+        state: "open"
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const proposed = await agentRequest(runtime, agent, "/api/agent/task/propose", {
+      method: "POST",
+      body: {
+        context: {
+          channelId: "C123",
+          threadTs: "1710000000.000900",
+          messageTs: "1710000000.000900",
+          authorId: "U111",
+          messages: [{ userId: "U111", text: "태스크로 만들어줘: implement API retry", ts: "1710000000.000900" }]
+        },
+        confirmed: true
+      }
+    });
+    expect(proposed.status).toBe(200);
+    const proposedBody = await proposed.json();
+    expect(proposedBody.task.category).toBe("coding");
+    expect(proposedBody.task.githubRef).toBe("acme/web#42");
+    expect(proposedBody.githubSync.status).toBe("created");
+    expect(calls).toHaveLength(1);
+    const firstCall = calls[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall!.url).toBe("https://api.github.com/repos/acme/web/issues");
+    expect(firstCall!.body.labels).toEqual(["task-manager", "frontend", "category:coding", "priority:P2", "status:confirmed"]);
+    expect(String(firstCall!.body.body)).toContain(`Task Manager ID: ${proposedBody.task.id}`);
+
+    const created = await request(runtime, `/api/tasks/${proposedBody.task.id}`, { token: adminToken });
+    const createdBody = await created.json();
+    const markdown = readFileSync(createdBody.task.markdownPath, "utf8");
+    expect(markdown).toContain('category: "coding"');
+    expect(markdown).toContain('github_ref: "acme/web#42"');
+  });
+
+  test("general tasks are not auto-created as GitHub issues", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    process.env.GITHUB_TOKEN = "gh_test_token";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoCreateIssues: true,
+        rules: [{ repo: "acme/web", codeIndicators: ["api"] }]
+      }
+    });
+
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      return new Response("{}", { status: 201, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: "Prepare stakeholder agenda",
+        description: "Collect agenda items for the weekly sync.",
+        status: "confirmed",
+        category: "general"
+      }
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json();
+    expect(createdBody.task.category).toBe("general");
+    expect(createdBody.task.githubRef).toBe(null);
+    expect(createdBody.githubSync).toMatchObject({ status: "skipped", reason: "not-coding" });
+    expect(fetchCount).toBe(0);
+  });
+
+  test("GitHub issue webhooks update linked task status", async () => {
+    const runtime = await makeRuntime();
+    const adminToken = await createAdmin(runtime);
+    process.env.GITHUB_WEBHOOK_SECRET = "webhook-secret";
+
+    await request(runtime, "/api/settings/github", {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        enabled: true,
+        autoUpdateTaskStatusFromGitHub: true,
+        autoCompleteClosedIssues: true
+      }
+    });
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: "Fix webhook status sync",
+        description: "Implement GitHub issue webhook status sync.",
+        status: "in_progress",
+        category: "coding",
+        githubRef: "acme/web#7"
+      }
+    });
+    const createdBody = await created.json();
+    expect(createdBody.task.status).toBe("in_progress");
+
+    const closedPayload = {
+      action: "closed",
+      repository: { full_name: "acme/web" },
+      issue: {
+        number: 7,
+        state: "closed",
+        html_url: "https://github.com/acme/web/issues/7",
+        labels: []
+      }
+    };
+    const closed = await githubWebhook(runtime, closedPayload);
+    expect(closed.status).toBe(200);
+    const closedBody = await closed.json();
+    expect(closedBody.sync.status).toBe("updated");
+    expect(closedBody.sync.task.status).toBe("done");
+
+    const reopenedPayload = {
+      ...closedPayload,
+      action: "reopened",
+      issue: { ...closedPayload.issue, state: "open" }
+    };
+    const reopened = await githubWebhook(runtime, reopenedPayload);
+    expect(reopened.status).toBe(200);
+    const reopenedBody = await reopened.json();
+    expect(reopenedBody.sync.status).toBe("updated");
+    expect(reopenedBody.sync.task.status).toBe("in_progress");
+
+    const final = await request(runtime, `/api/tasks/${createdBody.task.id}`, { token: adminToken });
+    const finalBody = await final.json();
+    expect(finalBody.task.status).toBe("in_progress");
+    expect(finalBody.task.githubRef).toBe("acme/web#7");
+  });
+
   test("setup can automatically install plugin files into a local agent workspace", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-agent-workspace-"));
     tempDirs.push(workspacePath);
+    mkdirSync(join(workspacePath, "plugins", "task-manager"), { recursive: true });
+    writeFileSync(join(workspacePath, "plugins", "task-manager", "task-manager-plugin.ts"), "export {};\n");
+    mkdirSync(join(workspacePath, "plugins", "shared"), { recursive: true });
+    writeFileSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"), "export {};\n");
 
     const response = await request(runtime, "/api/setup/agent/install", {
       method: "POST",
       token: adminToken,
       body: {
-        type: "hermes",
+        type: "openclaw",
         workspacePath,
         runReload: false,
         regenerateToken: true
@@ -371,13 +721,17 @@ describe("task-manager core", () => {
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.agent.name).toBe("Hermes Agent");
+    expect(body.agent.name).toBe("OpenClaw");
     expect(body.install.ok).toBe(true);
     expect(body.install.reload.ran).toBe(false);
-    expect(existsSync(join(workspacePath, "plugins", "task-manager", "task-manager-plugin.ts"))).toBe(true);
-    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(true);
+    expect(body.install.removedLegacy).toContain(join(workspacePath, "plugins", "task-manager"));
+    expect(existsSync(join(workspacePath, "skills", "task-manager", "task-manager-skill.ts"))).toBe(true);
+    expect(existsSync(join(workspacePath, "skills", "shared", "task-manager-client.ts"))).toBe(true);
+    expect(existsSync(join(workspacePath, "skills", "task-manager", "openclaw-task-manager.json"))).toBe(true);
+    expect(existsSync(join(workspacePath, "plugins", "task-manager"))).toBe(false);
+    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(false);
 
-    const env = readFileSync(join(workspacePath, "plugins", "task-manager", "task-manager.env"), "utf8");
+    const env = readFileSync(join(workspacePath, "skills", "task-manager", "task-manager.env"), "utf8");
     expect(env).toContain(`TASK_MANAGER_AGENT_ID=${body.agent.id}`);
     expect(env).toContain(`TASK_MANAGER_API_TOKEN=${body.token}`);
     expect(body.connectTest.ok).toBe(true);
@@ -386,7 +740,7 @@ describe("task-manager core", () => {
       method: "POST",
       token: adminToken,
       body: {
-        type: "hermes",
+        type: "openclaw",
         workspacePath,
         runReload: false
       }
@@ -395,8 +749,8 @@ describe("task-manager core", () => {
     const uninstallBody = await uninstall.json();
     expect(uninstallBody.uninstall.ok).toBe(true);
     expect(uninstallBody.tokenRevoked).toBe(true);
-    expect(existsSync(join(workspacePath, "plugins", "task-manager"))).toBe(false);
-    expect(existsSync(join(workspacePath, "plugins", "shared", "task-manager-client.ts"))).toBe(false);
+    expect(existsSync(join(workspacePath, "skills", "task-manager"))).toBe(false);
+    expect(existsSync(join(workspacePath, "skills", "shared", "task-manager-client.ts"))).toBe(false);
 
     const oldTokenCheck = await agentRequest(
       runtime,
@@ -413,12 +767,12 @@ describe("task-manager core", () => {
   test("setup detects workspace from environment when path is omitted", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const workspacePath = mkdtempSync(join(tmpdir(), "tm-hermes-detected-"));
+    const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-detected-"));
     tempDirs.push(workspacePath);
-    process.env.HERMES_WORKSPACE = workspacePath;
+    process.env.OPENCLAW_WORKSPACE = workspacePath;
 
     try {
-      const detected = await request(runtime, "/api/setup/agent/workspaces?type=hermes", {
+      const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
         token: adminToken
       });
       expect(detected.status).toBe(200);
@@ -429,7 +783,7 @@ describe("task-manager core", () => {
         method: "POST",
         token: adminToken,
         body: {
-          type: "hermes",
+          type: "openclaw",
           runReload: false,
           regenerateToken: true
         }
@@ -437,21 +791,21 @@ describe("task-manager core", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.install.workspacePath).toBe(workspacePath);
-      expect(existsSync(join(workspacePath, "plugins", "task-manager", "task-manager.env"))).toBe(true);
+      expect(existsSync(join(workspacePath, "skills", "task-manager", "task-manager.env"))).toBe(true);
     } finally {
-      delete process.env.HERMES_WORKSPACE;
+      delete process.env.OPENCLAW_WORKSPACE;
     }
   });
 
   test("setup detects workspace from task-manager environment variable", async () => {
     const runtime = await makeRuntime();
     const adminToken = await createAdmin(runtime);
-    const workspacePath = mkdtempSync(join(tmpdir(), "tm-hermes-mounted-"));
+    const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-mounted-"));
     tempDirs.push(workspacePath);
-    process.env.TASK_MANAGER_HERMES_WORKSPACE = workspacePath;
+    process.env.TASK_MANAGER_OPENCLAW_WORKSPACE = workspacePath;
 
     try {
-      const detected = await request(runtime, "/api/setup/agent/workspaces?type=hermes", {
+      const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
         token: adminToken
       });
       expect(detected.status).toBe(200);
@@ -459,7 +813,7 @@ describe("task-manager core", () => {
       expect(detectedBody.selected.path).toBe(workspacePath);
       expect(detectedBody.selected.source).toBe("env");
     } finally {
-      delete process.env.TASK_MANAGER_HERMES_WORKSPACE;
+      delete process.env.TASK_MANAGER_OPENCLAW_WORKSPACE;
     }
   });
 });
@@ -481,7 +835,7 @@ async function createAdmin(runtime: Runtime): Promise<string> {
   return body.token;
 }
 
-async function createAgent(runtime: Runtime, token: string, type: "hermes" | "openclaw") {
+async function createAgent(runtime: Runtime, token: string, type: "openclaw") {
   const response = await request(runtime, "/api/settings/agents", {
     method: "PATCH",
     token,
@@ -527,4 +881,28 @@ async function agentRequest(
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   return runtime.app.handle(new Request(`http://localhost${path}`, init));
+}
+
+async function githubWebhook(runtime: Runtime, payload: Record<string, unknown>): Promise<Response> {
+  const body = JSON.stringify(payload);
+  const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  return runtime.app.handle(new Request("http://localhost/api/integrations/github/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-delivery": "delivery-test",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    body
+  }));
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
 }

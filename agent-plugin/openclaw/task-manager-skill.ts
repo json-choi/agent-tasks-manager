@@ -53,7 +53,10 @@ export function createOpenClawTaskManagerSkill(options: OpenClawTaskManagerSkill
       };
 
       if (command.type === "propose") {
-        const result = await client.proposeTask({ context });
+        const proposeInput: Parameters<TaskManagerClient["proposeTask"]>[0] = { context };
+        if (command.assigneeId) proposeInput.assignee = command.assigneeId;
+        if (message.userId) proposeInput.reporter = message.userId;
+        const result = await client.proposeTask(proposeInput);
         return result.actions ?? [];
       }
 
@@ -84,6 +87,21 @@ export function createOpenClawTaskManagerSkill(options: OpenClawTaskManagerSkill
           text: "I need a task id for that command."
         }
       ];
+    },
+
+    async handleInteraction(payload: unknown) {
+      const result = await client.slackInteraction(payload);
+      return result.actions ?? [];
+    },
+
+    async pollOutbox(postActions: (actions: unknown[]) => Promise<void>) {
+      const result = await client.getOutbox();
+      for (const item of result.outbox ?? []) {
+        if (Array.isArray(item.payload?.actions)) {
+          await postActions(item.payload.actions);
+        }
+        await client.ackOutbox(item.id);
+      }
     }
   };
 }

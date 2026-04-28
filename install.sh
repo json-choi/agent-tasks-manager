@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="${TASK_MANAGER_DIR:-$HOME/.agent-tasks-manager}"
+DEFAULT_ROOT_DIR="$HOME/.agent-task-manager"
+if [ -n "${TASK_MANAGER_DIR:-}" ]; then
+  ROOT_DIR="$TASK_MANAGER_DIR"
+else
+  ROOT_DIR="$DEFAULT_ROOT_DIR"
+fi
 PORT="${PORT:-3011}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:${PORT}}"
 AUTH_SECRET="${BETTER_AUTH_SECRET:-}"
