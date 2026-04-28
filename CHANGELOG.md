@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/json-choi/agent-task-manager/compare/agent-task-manager-v0.2.0...agent-task-manager-v0.3.0) (2026-04-28)
+
+
+### Features
+
+* add OpenClaw guided install flow ([#8](https://github.com/json-choi/agent-task-manager/issues/8)) ([2172121](https://github.com/json-choi/agent-task-manager/commit/2172121fb6d37c7bb4fee43da5698580142bb397))
+
 ## [0.2.0](https://github.com/json-choi/agent-task-manager/compare/agent-task-manager-v0.1.0...agent-task-manager-v0.2.0) (2026-04-28)
 
 
