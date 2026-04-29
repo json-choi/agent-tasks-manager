@@ -1,7 +1,7 @@
 import type { AnyElysia } from "elysia";
 import type { AppConfig } from "./config/app-config";
 import type { TaskStore } from "./repositories/task-store.repository";
-import type { AdminSession, AuthService } from "./services/auth.service";
+import type { AdminSession, AuthService, AuthUserSession } from "./services/auth.service";
 import type { AgentSettings } from "./shared/types";
 import { jsonResponse, parseBearer } from "./shared/utils";
 
@@ -14,24 +14,34 @@ export interface Runtime {
 
 export type AdminAuthResult = { admin: AdminSession } | { response: Response };
 
+export type UserAuthResult = { user: AuthUserSession } | { response: Response };
+
 export type AgentAuthResult = { agent: AgentSettings } | { response: Response };
 
 export interface ServerContext {
   config: AppConfig;
   store: TaskStore;
   auth: AuthService;
-  getAdmin(request: Request): Promise<AdminSession | null>;
+  getUser(request: Request): Promise<AuthUserSession | null>;
+  requireUser(request: Request): Promise<UserAuthResult>;
   requireAdmin(request: Request): Promise<AdminAuthResult>;
   requireAgent(request: Request): AgentAuthResult;
 }
 
 export function createServerContext(config: AppConfig, store: TaskStore, auth: AuthService): ServerContext {
-  const getAdmin = (request: Request) => auth.getAdmin(request);
+  const getUser = (request: Request) => auth.getUser(request);
+
+  const requireUser = async (request: Request): Promise<UserAuthResult> => {
+    const user = await getUser(request);
+    if (!user) return { response: jsonResponse({ error: "Authentication required" }, 401) };
+    return { user };
+  };
 
   const requireAdmin = async (request: Request): Promise<AdminAuthResult> => {
-    const admin = await getAdmin(request);
-    if (!admin) return { response: jsonResponse({ error: "Admin authentication required" }, 401) };
-    return { admin };
+    const user = await getUser(request);
+    if (!user) return { response: jsonResponse({ error: "Admin authentication required" }, 401) };
+    if (user.role !== "owner") return { response: jsonResponse({ error: "Owner access required" }, 403) };
+    return { admin: { ...user, role: "owner" } };
   };
 
   const requireAgent = (request: Request): AgentAuthResult => {
@@ -50,7 +60,8 @@ export function createServerContext(config: AppConfig, store: TaskStore, auth: A
     config,
     store,
     auth,
-    getAdmin,
+    getUser,
+    requireUser,
     requireAdmin,
     requireAgent
   };

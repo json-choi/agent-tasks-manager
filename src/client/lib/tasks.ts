@@ -13,6 +13,7 @@ export function taskDraft(task: Task): {
   reporter: string;
   initiative: string;
   nextAction: string;
+  result: string;
   githubRef: string;
   description: string;
 } {
@@ -24,6 +25,7 @@ export function taskDraft(task: Task): {
     reporter: task.reporter || "",
     initiative: task.initiative || "",
     nextAction: task.nextAction || "",
+    result: task.result || "",
     githubRef: task.githubRef || "",
     description: task.description || ""
   };

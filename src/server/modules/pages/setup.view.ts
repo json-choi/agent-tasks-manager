@@ -238,7 +238,7 @@ export function setupPage(): string {
       { id: 'automation', label: 'Automation', summary: 'Optional channel suggestion mode.', required: false },
       { id: 'finish', label: 'Finish', summary: 'Review readiness and open the dashboard.', required: false }
     ];
-    const state = { token: localStorage.getItem('tm_admin_token') || '', activeStepId: 'admin', status: null, userSelectedStep: false, language: initialUiLanguage() };
+    const state = { activeStepId: 'admin', status: null, userSelectedStep: false, language: initialUiLanguage() };
     const $ = (id) => document.getElementById(id);
 
     function initialUiLanguage() {
@@ -321,8 +321,7 @@ export function setupPage(): string {
 
     async function api(path, options = {}) {
       const headers = Object.assign({ 'content-type': 'application/json' }, options.headers || {});
-      if (state.token) headers.authorization = 'Bearer ' + state.token;
-      const response = await fetch(path, Object.assign({}, options, { headers }));
+      const response = await fetch(path, Object.assign({}, options, { headers, credentials: 'same-origin' }));
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || response.statusText);
       return data;
@@ -371,7 +370,7 @@ export function setupPage(): string {
       if (id === 'admin') return false;
       if (id === 'storage') return false;
       if (id === 'finish') return !requiredStepsComplete(status);
-      return !state.token && status.setupLocked;
+      return false;
     }
 
     function requiredStepsComplete(status) {
@@ -396,7 +395,6 @@ export function setupPage(): string {
       }
       if (id === 'agent') {
         const items = [];
-        if (!state.token && status.setupLocked) items.push('Log in as admin before installing agent plugins.');
         if (!(status.agents && status.agents.length)) items.push('Install OpenClaw before continuing.');
         return items.length ? items : ['OpenClaw integration is installed.'];
       }
@@ -606,12 +604,10 @@ export function setupPage(): string {
     $('admin-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       try {
-        const data = await api('/api/setup/admin', {
+        await api('/api/setup/admin', {
           method: 'POST',
           body: JSON.stringify(formData(event.currentTarget))
         });
-        state.token = data.token;
-        localStorage.setItem('tm_admin_token', data.token);
         setResult('admin-result', 'Admin created and setup locked.');
         state.userSelectedStep = false;
         await loadStatus();

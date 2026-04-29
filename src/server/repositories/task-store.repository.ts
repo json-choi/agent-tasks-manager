@@ -10,6 +10,8 @@ import type {
   ChannelMode,
   ChannelPolicy,
   GitHubSettings,
+  MemberInvitation,
+  MemberInvitationStatus,
   OwnerMapping,
   OutboxItem,
   PublicAccessSettings,
@@ -20,9 +22,11 @@ import type {
   Task,
   TaskCategory,
   TaskPriority,
-  TaskState
+  TaskState,
+  UserProfile,
+  UserRole
 } from "../shared/types";
-import { channelModes, taskCategories, taskPriorities, taskStates } from "../shared/types";
+import { channelModes, taskCategories, taskPriorities, taskStates, userRoles } from "../shared/types";
 import { compactText, hashSecret, newId, newSecret, nowIso, safeJsonParse, tokenPreview } from "../shared/utils";
 
 interface AgentRow {
@@ -76,6 +80,32 @@ interface OwnerMappingRow {
   active: number;
   created_at: string;
   updated_at: string;
+}
+
+interface UserProfileRow {
+  user_id: string;
+  role: UserRole;
+  owner_id: string | null;
+  slack_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MemberInvitationRow {
+  id: string;
+  token_hash: string;
+  owner_id: string;
+  owner_name: string | null;
+  slack_user_id: string;
+  email: string | null;
+  status: MemberInvitationStatus;
+  expires_at: string;
+  accepted_user_id: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
 }
 
 interface SlackCursorRow {
@@ -189,6 +219,15 @@ export interface UpsertOwnerInput {
   slackUserId?: string | null;
   aliases?: string[];
   active?: boolean;
+}
+
+export interface CreateMemberInvitationInput {
+  id?: string;
+  token?: string;
+  owner: OwnerMapping;
+  email?: string | null;
+  createdByUserId?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface CreateAssignmentRequestInput {
@@ -316,6 +355,50 @@ export class TaskStore {
 
   isSetupLocked(): boolean {
     return this.countAdmins() > 0;
+  }
+
+  getUserProfile(userId: string): UserProfile | null {
+    const row = this.db
+      .query("SELECT user_id, role, owner_id, slack_user_id, created_at, updated_at FROM user_profiles WHERE user_id = ?")
+      .get(userId) as UserProfileRow | null;
+    return row ? userProfileFromRow(row) : null;
+  }
+
+  ensureOwnerProfile(userId: string): UserProfile {
+    const existing = this.getUserProfile(userId);
+    if (existing) return existing;
+
+    const now = nowIso();
+    this.db
+      .query(
+        `INSERT INTO user_profiles
+         (user_id, role, owner_id, slack_user_id, created_at, updated_at)
+         VALUES (?, 'owner', NULL, NULL, ?, ?)`
+      )
+      .run(userId, now, now);
+    this.audit("user_profile.owner_created", { userId });
+    const profile = this.getUserProfile(userId);
+    if (!profile) throw new Error("Owner profile create failed");
+    return profile;
+  }
+
+  createMemberProfile(userId: string, owner: OwnerMapping): UserProfile {
+    const existing = this.getUserProfile(userId);
+    if (existing) return existing;
+    if (!owner.slackUserId) throw new Error("Member profile owner must have a Slack user ID.");
+
+    const now = nowIso();
+    this.db
+      .query(
+        `INSERT INTO user_profiles
+         (user_id, role, owner_id, slack_user_id, created_at, updated_at)
+         VALUES (?, 'member', ?, ?, ?, ?)`
+      )
+      .run(userId, owner.id, owner.slackUserId, now, now);
+    this.audit("user_profile.member_created", { userId, ownerId: owner.id, slackUserId: owner.slackUserId });
+    const profile = this.getUserProfile(userId);
+    if (!profile) throw new Error("Member profile create failed");
+    return profile;
   }
 
   recordAudit(type: string, payload: unknown): void {
@@ -767,6 +850,15 @@ export class TaskStore {
     return rows.map(ownerFromRow);
   }
 
+  getOwner(id: string): OwnerMapping | null {
+    const row = this.db
+      .query(
+        "SELECT id, owner_name, slack_user_id, aliases, active, created_at, updated_at FROM owner_mappings WHERE id = ?"
+      )
+      .get(id) as OwnerMappingRow | null;
+    return row ? ownerFromRow(row) : null;
+  }
+
   upsertOwner(input: UpsertOwnerInput): OwnerMapping {
     const existing = input.id
       ? (this.db
@@ -819,6 +911,176 @@ export class TaskStore {
         return values.some((candidate) => normalizeToken(candidate) === normalized);
       }) ?? null
     );
+  }
+
+  hasMemberProfileForOwner(ownerId: string): boolean {
+    const row = this.db
+      .query("SELECT count(*) AS count FROM user_profiles WHERE role = 'member' AND owner_id = ?")
+      .get(ownerId) as { count: number };
+    return row.count > 0;
+  }
+
+  expireMemberInvitations(now = nowIso()): void {
+    const staleClaimThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    this.db
+      .query(
+        `UPDATE member_invitations
+         SET status = 'expired', updated_at = ?
+         WHERE status IN ('pending', 'accepted') AND accepted_user_id IS NULL AND expires_at <= ?`
+      )
+      .run(now, now);
+    this.db
+      .query(
+        `UPDATE member_invitations
+         SET status = 'pending', updated_at = ?, accepted_at = NULL
+         WHERE status = 'accepted' AND accepted_user_id IS NULL AND accepted_at < ? AND expires_at > ?`
+      )
+      .run(now, staleClaimThreshold, now);
+  }
+
+  listMemberInvitations(): MemberInvitation[] {
+    this.expireMemberInvitations();
+    const rows = this.db
+      .query(
+        `SELECT member_invitations.*, owner_mappings.owner_name
+         FROM member_invitations
+         LEFT JOIN owner_mappings ON owner_mappings.id = member_invitations.owner_id
+         ORDER BY member_invitations.created_at DESC`
+      )
+      .all() as MemberInvitationRow[];
+    return rows.map(memberInvitationFromRow);
+  }
+
+  getMemberInvitation(id: string): MemberInvitation | null {
+    this.expireMemberInvitations();
+    const row = this.db
+      .query(
+        `SELECT member_invitations.*, owner_mappings.owner_name
+         FROM member_invitations
+         LEFT JOIN owner_mappings ON owner_mappings.id = member_invitations.owner_id
+         WHERE member_invitations.id = ?`
+      )
+      .get(id) as MemberInvitationRow | null;
+    return row ? memberInvitationFromRow(row) : null;
+  }
+
+  getPendingMemberInvitationForOwner(ownerId: string): MemberInvitation | null {
+    this.expireMemberInvitations();
+    const row = this.db
+      .query(
+        `SELECT member_invitations.*, owner_mappings.owner_name
+         FROM member_invitations
+         LEFT JOIN owner_mappings ON owner_mappings.id = member_invitations.owner_id
+         WHERE member_invitations.owner_id = ? AND member_invitations.status = 'pending'
+         ORDER BY member_invitations.created_at DESC
+         LIMIT 1`
+      )
+      .get(ownerId) as MemberInvitationRow | null;
+    return row ? memberInvitationFromRow(row) : null;
+  }
+
+  createMemberInvitation(input: CreateMemberInvitationInput): { invitation: MemberInvitation; token: string } {
+    if (!input.owner.slackUserId) throw new Error("Member invitation owner must have a Slack user ID.");
+
+    const id = input.id ?? newId("inv");
+    const token = input.token ?? newSecret("invite");
+    const tokenHash = hashSecret(token);
+    const now = nowIso();
+    const expiresAt = input.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    this.db
+      .query(
+        `INSERT INTO member_invitations
+         (id, token_hash, owner_id, slack_user_id, email, status, expires_at,
+          accepted_user_id, created_by_user_id, created_at, updated_at, accepted_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?, ?, NULL, NULL)`
+      )
+      .run(
+        id,
+        tokenHash,
+        input.owner.id,
+        input.owner.slackUserId,
+        input.email ?? null,
+        expiresAt,
+        input.createdByUserId ?? null,
+        now,
+        now
+      );
+    const invitation = this.getMemberInvitation(id);
+    if (!invitation) throw new Error("Member invitation create failed");
+    this.audit("member_invitation.created", { id, ownerId: input.owner.id, slackUserId: input.owner.slackUserId });
+    return { invitation, token };
+  }
+
+  getMemberInvitationByToken(token: string): MemberInvitation | null {
+    this.expireMemberInvitations();
+    const row = this.db
+      .query(
+        `SELECT member_invitations.*, owner_mappings.owner_name
+         FROM member_invitations
+         LEFT JOIN owner_mappings ON owner_mappings.id = member_invitations.owner_id
+         WHERE member_invitations.token_hash = ?`
+      )
+      .get(hashSecret(token)) as MemberInvitationRow | null;
+    return row ? memberInvitationFromRow(row) : null;
+  }
+
+  claimMemberInvitation(id: string): MemberInvitation | null {
+    this.expireMemberInvitations();
+    const now = nowIso();
+    const result = this.db
+      .query(
+        `UPDATE member_invitations
+         SET status = 'accepted', updated_at = ?, accepted_at = ?
+         WHERE id = ? AND status = 'pending' AND expires_at > ?`
+      )
+      .run(now, now, id, now) as { changes: number };
+    if (result.changes < 1) return null;
+    return this.getMemberInvitation(id);
+  }
+
+  completeMemberInvitation(id: string, input: { userId: string; email: string }): MemberInvitation | null {
+    const existing = this.getMemberInvitation(id);
+    if (!existing || existing.status !== "accepted" || existing.acceptedUserId) return existing;
+
+    const now = nowIso();
+    this.db
+      .query(
+        `UPDATE member_invitations
+         SET accepted_user_id = ?, email = ?, updated_at = ?
+         WHERE id = ? AND status = 'accepted' AND accepted_user_id IS NULL`
+      )
+      .run(input.userId, input.email.toLowerCase(), now, id);
+    this.audit("member_invitation.accepted", { id, userId: input.userId, ownerId: existing.ownerId });
+    return this.getMemberInvitation(id);
+  }
+
+  releaseMemberInvitationClaim(id: string): MemberInvitation | null {
+    const existing = this.getMemberInvitation(id);
+    if (!existing || existing.status !== "accepted" || existing.acceptedUserId) return existing;
+
+    const now = nowIso();
+    this.db
+      .query(
+        `UPDATE member_invitations
+         SET status = 'pending', updated_at = ?, accepted_at = NULL
+         WHERE id = ? AND status = 'accepted' AND accepted_user_id IS NULL`
+      )
+      .run(now, id);
+    return this.getMemberInvitation(id);
+  }
+
+  revokeMemberInvitation(id: string): MemberInvitation | null {
+    this.expireMemberInvitations();
+    const existing = this.getMemberInvitation(id);
+    if (!existing) return null;
+    if (existing.status !== "pending" && !(existing.status === "accepted" && !existing.acceptedUserId)) return existing;
+
+    const now = nowIso();
+    this.db
+      .query("UPDATE member_invitations SET status = 'revoked', updated_at = ?, revoked_at = ? WHERE id = ?")
+      .run(now, now, id);
+    this.audit("member_invitation.revoked", { id, ownerId: existing.ownerId });
+    return this.getMemberInvitation(id);
   }
 
   getSlackCursor(agentId: string, channelId: string): SlackCursor | null {
@@ -1368,6 +1630,47 @@ public_access:
       )
     `);
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id TEXT PRIMARY KEY,
+        role TEXT NOT NULL,
+        owner_id TEXT,
+        slack_user_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES "user"(id) ON DELETE CASCADE,
+        FOREIGN KEY (owner_id) REFERENCES owner_mappings(id) ON DELETE SET NULL
+      )
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS user_profiles_ownerId_idx ON user_profiles(owner_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS user_profiles_slackUserId_idx ON user_profiles(slack_user_id)`);
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_memberOwner_unique
+       ON user_profiles(owner_id)
+       WHERE role = 'member' AND owner_id IS NOT NULL`
+    );
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS member_invitations (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        owner_id TEXT NOT NULL,
+        slack_user_id TEXT NOT NULL,
+        email TEXT,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        accepted_user_id TEXT,
+        created_by_user_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        accepted_at TEXT,
+        revoked_at TEXT,
+        FOREIGN KEY (owner_id) REFERENCES owner_mappings(id) ON DELETE CASCADE,
+        FOREIGN KEY (accepted_user_id) REFERENCES "user"(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by_user_id) REFERENCES "user"(id) ON DELETE SET NULL
+      )
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS member_invitations_ownerId_idx ON member_invitations(owner_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS member_invitations_status_idx ON member_invitations(status)`);
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS slack_channel_cursors (
         agent_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
@@ -1447,6 +1750,7 @@ public_access:
         updated_at TEXT NOT NULL
       )
     `);
+    this.backfillFirstOwnerProfile();
     this.writeAppConfig();
   }
 
@@ -1454,6 +1758,26 @@ public_access:
     const rows = this.db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     if (rows.some((row) => row.name === name)) return;
     this.db.run(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
+  }
+
+  private backfillFirstOwnerProfile(): void {
+    const profileCount = this.db.query("SELECT count(*) AS count FROM user_profiles").get() as { count: number };
+    if (profileCount.count > 0) return;
+
+    const firstUser = this.db
+      .query('SELECT id FROM "user" ORDER BY createdAt ASC LIMIT 1')
+      .get() as { id: string } | null;
+    if (!firstUser) return;
+
+    const now = nowIso();
+    this.db
+      .query(
+        `INSERT INTO user_profiles
+         (user_id, role, owner_id, slack_user_id, created_at, updated_at)
+         VALUES (?, 'owner', NULL, NULL, ?, ?)`
+      )
+      .run(firstUser.id, now, now);
+    this.audit("user_profile.owner_backfilled", { userId: firstUser.id });
   }
 }
 
@@ -1515,6 +1839,36 @@ function ownerFromRow(row: OwnerMappingRow): OwnerMapping {
     active: row.active === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function userProfileFromRow(row: UserProfileRow): UserProfile {
+  return {
+    userId: row.user_id,
+    role: userRoles.includes(row.role) ? row.role : "member",
+    ownerId: row.owner_id,
+    slackUserId: row.slack_user_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function memberInvitationFromRow(row: MemberInvitationRow): MemberInvitation {
+  const statuses: MemberInvitationStatus[] = ["pending", "accepted", "revoked", "expired"];
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    ownerName: row.owner_name,
+    slackUserId: row.slack_user_id,
+    email: row.email,
+    status: statuses.includes(row.status) ? row.status : "expired",
+    expiresAt: row.expires_at,
+    acceptedUserId: row.accepted_user_id,
+    createdByUserId: row.created_by_user_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    acceptedAt: row.accepted_at,
+    revokedAt: row.revoked_at
   };
 }
 

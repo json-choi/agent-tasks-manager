@@ -9,6 +9,7 @@ export type Task = {
   reporter?: string | null;
   initiative?: string | null;
   nextAction?: string | null;
+  result?: string | null;
   githubRef?: string | null;
   channelId?: string | null;
   threadTs?: string | null;
@@ -37,6 +38,38 @@ export type OwnerMapping = {
   aliases: string[];
   active: boolean;
   updatedAt: string;
+};
+
+export type UserRole = "owner" | "member";
+
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: string | Date;
+};
+
+export type AuthSessionPayload = {
+  user: SessionUser;
+  role: UserRole;
+  owner?: OwnerMapping | null;
+  expiresAt?: string | null;
+};
+
+export type MemberInvitation = {
+  id: string;
+  ownerId: string;
+  ownerName?: string | null;
+  slackUserId: string;
+  email?: string | null;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expiresAt: string;
+  acceptedUserId?: string | null;
+  createdByUserId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  acceptedAt?: string | null;
+  revokedAt?: string | null;
 };
 
 export type ChannelPolicy = {

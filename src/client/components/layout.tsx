@@ -54,7 +54,7 @@ export function LoginScreen({
           <LanguageSelect id="login-language" language={language} t={t} onChange={onLanguageChange} />
         </div>
         <form className="panel login" onSubmit={onLogin}>
-          <p className="eyebrow">{t("Admin")}</p>
+          <p className="eyebrow">{t("Account")}</p>
           <h2>{t("Sign in")}</h2>
           <label htmlFor="login-email">
             {t("Email")}
@@ -77,15 +77,19 @@ export function LoginScreen({
 
 export function Sidebar({
   activeView,
+  isOwner,
   t,
   onLogout,
   onViewChange
 }: {
   activeView: View;
+  isOwner: boolean;
   t: Translator;
   onLogout: () => void;
   onViewChange: (view: View) => void;
 }) {
+  const visibleNavViews = isOwner ? navViews : navViews.filter((item) => item.view === "dashboard" || item.view === "tasks");
+
   return (
     <aside className="app-sidebar">
       <div className="sidebar-brand">
@@ -96,7 +100,7 @@ export function Sidebar({
         </div>
       </div>
       <nav className="app-nav-left" aria-label="Primary">
-        {navViews.map(({ view, label, Icon }) => (
+        {visibleNavViews.map(({ view, label, Icon }) => (
           <button
             key={view}
             className={`app-tab${activeView === view ? " active" : ""}`}
@@ -112,10 +116,10 @@ export function Sidebar({
         ))}
       </nav>
       <div className="sidebar-actions">
-        <a className="link-button secondary-button icon-button" href="/setup" aria-label={t("Setup")} title={t("Setup")}>
+        {isOwner ? <a className="link-button secondary-button icon-button" href="/setup" aria-label={t("Setup")} title={t("Setup")}>
           <Wrench className="icon" aria-hidden="true" />
           <span className="sr-only">{t("Setup")}</span>
-        </a>
+        </a> : null}
         <button className="icon-button" type="button" aria-label={t("Logout")} title={t("Logout")} onClick={onLogout}>
           <LogOut className="icon" aria-hidden="true" />
           <span className="sr-only">{t("Logout")}</span>

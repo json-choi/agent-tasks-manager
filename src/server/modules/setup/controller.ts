@@ -12,6 +12,7 @@ import {
 } from "../../services/agent-plugin-installer.service";
 import { authCookieHeaders } from "../../services/auth.service";
 import type { UpsertAgentInput } from "../../repositories/task-store.repository";
+import { enqueueMemberInvitations } from "../../services/member-invitation.service";
 import { asRecord, booleanValue, jsonResponse, stringValue, tokenPreview } from "../../shared/utils";
 
 export function setupController({ auth, config, store, requireAdmin }: ServerContext) {
@@ -41,10 +42,15 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
 
       const input = asRecord(body);
       const slackPermissionsReviewed = booleanValue(input.slackPermissionsReviewed);
+      const review = store.updateSetupReviewSettings({
+        slackPermissionsReviewedAt: slackPermissionsReviewed === false ? null : new Date().toISOString()
+      });
+      const memberInvites = slackPermissionsReviewed === false
+        ? null
+        : enqueueMemberInvitations({ store, config, createdByUserId: auth.admin.id });
       return {
-        review: store.updateSetupReviewSettings({
-          slackPermissionsReviewedAt: slackPermissionsReviewed === false ? null : new Date().toISOString()
-        })
+        review,
+        memberInvites
       };
     })
     .post("/api/setup/admin", async ({ body }) => {
@@ -81,9 +87,9 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
       }
 
       const payload = await response.json() as {
-        token?: string;
         user?: { id: string; email: string; name: string; createdAt: string | Date };
       };
+      if (payload.user) store.ensureOwnerProfile(payload.user.id);
       store.recordAudit("admin.created", { email: email.toLowerCase(), provider: "better-auth" });
       store.refreshAppConfig();
 
@@ -93,7 +99,6 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
           admin: payload.user
             ? { id: payload.user.id, email: payload.user.email, name: payload.user.name, createdAt: payload.user.createdAt }
             : null,
-          token: payload.token,
           expiresAt: null
         },
         201,
@@ -182,6 +187,9 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
           envPath: installed.envPath,
           reload: installed.reload
         });
+        const memberInvites = store.getSetupReviewSettings().slackPermissionsReviewedAt
+          ? enqueueMemberInvitations({ store, config, createdByUserId: auth.admin.id })
+          : null;
 
         return {
           ok: installed.ok,
@@ -189,6 +197,7 @@ export function setupController({ auth, config, store, requireAdmin }: ServerCon
           token: result.token,
           install: installed,
           quickStart: buildAgentQuickStart(result.agent, config.publicBaseUrl, result.token),
+          memberInvites,
           connectTest: {
             ok: Boolean(store.getAgentForAuth(result.agent.id, result.token)),
             serverTime: new Date().toISOString()

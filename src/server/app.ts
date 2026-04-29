@@ -6,6 +6,7 @@ import { createServerContext } from "./context";
 import { agentApiController } from "./modules/agent-api/controller";
 import { authController } from "./modules/auth/controller";
 import { integrationsController } from "./modules/integrations/controller";
+import { invitationsController } from "./modules/invitations/controller";
 import { pagesController } from "./modules/pages/controller";
 import { settingsController } from "./modules/settings/controller";
 import { setupController } from "./modules/setup/controller";
@@ -23,6 +24,7 @@ export async function createRuntime(overrides: Partial<AppConfig> = {}): Promise
     .use(await fullstackStaticPlugin())
     .use(systemController(context))
     .use(pagesController())
+    .use(invitationsController(context))
     .use(setupController(context))
     .use(authController(context))
     .use(tasksController(context))

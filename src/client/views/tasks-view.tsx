@@ -18,6 +18,7 @@ import type { ApiClient, OwnerMapping, ResultMessage, Task, Translator, View } f
 
 export function TaskWorkspace({
   api,
+  isOwner,
   people,
   result,
   search,
@@ -30,6 +31,7 @@ export function TaskWorkspace({
   onSelectTask
 }: {
   api: ApiClient;
+  isOwner: boolean;
   people: OwnerMapping[];
   result: ResultMessage | null;
   search: string;
@@ -71,13 +73,13 @@ export function TaskWorkspace({
                 {t(view === "tasks" ? "Search, create, and edit Markdown-backed tasks." : "Open work, highest risk first.")}
               </p>
             </div>
-            <button id="new-task-toggle" type="button" onClick={() => setIsComposerOpen((open) => !open)}>
+            {isOwner ? <button id="new-task-toggle" type="button" onClick={() => setIsComposerOpen((open) => !open)}>
               <Plus className="icon" aria-hidden="true" />
               <span>{t("New")}</span>
-            </button>
+            </button> : null}
           </div>
 
-          {isComposerOpen ? (
+          {isOwner && isComposerOpen ? (
             <TaskComposer people={people} result={result} t={t} onCreateTask={onCreateTask} />
           ) : null}
 
@@ -114,7 +116,7 @@ export function TaskWorkspace({
       </details>
 
       {selectedTask ? (
-        <TaskDetail api={api} people={people} task={selectedTask} t={t} onReloadTasks={onReloadTasks} onSelectTask={onSelectTask} />
+        <TaskDetail api={api} isOwner={isOwner} people={people} task={selectedTask} t={t} onReloadTasks={onReloadTasks} onSelectTask={onSelectTask} />
       ) : null}
     </section>
   );
@@ -252,6 +254,7 @@ function TaskRow({ task, t, onSelectTask }: { task: Task; t: Translator; onSelec
 
 function TaskDetail({
   api,
+  isOwner,
   people,
   task,
   t,
@@ -259,6 +262,7 @@ function TaskDetail({
   onSelectTask
 }: {
   api: ApiClient;
+  isOwner: boolean;
   people: OwnerMapping[];
   task: Task;
   t: Translator;
@@ -275,9 +279,12 @@ function TaskDetail({
 
   async function saveSelected() {
     try {
+      const payload = isOwner
+        ? draft
+        : { status: draft.status, nextAction: draft.nextAction, result: draft.result };
       const data = await api<{ task: Task }>(`/api/tasks/${task.id}`, {
         method: "PATCH",
-        body: JSON.stringify(draft)
+        body: JSON.stringify(payload)
       });
       setResult({ text: "Saved.", ok: true });
       await onReloadTasks();
@@ -308,52 +315,56 @@ function TaskDetail({
         <dd>{task.markdownPath || ""}</dd>
       </dl>
       <div className="detail-grid">
-        <label htmlFor="priority-select">
+        {isOwner ? <label htmlFor="priority-select">
           {t("Priority")}
           <select id="priority-select" value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.currentTarget.value })}>
             {priorities.map((priority) => <option key={priority} value={priority}>{priority}</option>)}
           </select>
-        </label>
+        </label> : null}
         <label htmlFor="status-select">
           {t("Status")}
           <select id="status-select" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.currentTarget.value })}>
             {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
           </select>
         </label>
-        <label htmlFor="category-select">
+        {isOwner ? <label htmlFor="category-select">
           {t("Category")}
           <select id="category-select" value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.currentTarget.value })}>
             {categories.map((category) => <option key={category} value={category}>{t(category)}</option>)}
           </select>
-        </label>
-        <label htmlFor="assignee-input">
+        </label> : null}
+        {isOwner ? <label htmlFor="assignee-input">
           {t("Assignee")}
           <select id="assignee-input" value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.currentTarget.value })}>
             <OwnerOptions emptyLabel="Unassigned" people={people} t={t} />
           </select>
-        </label>
-        <label htmlFor="reporter-input">
+        </label> : null}
+        {isOwner ? <label htmlFor="reporter-input">
           {t("Reporter")}
           <select id="reporter-input" value={draft.reporter} onChange={(event) => setDraft({ ...draft, reporter: event.currentTarget.value })}>
             <OwnerOptions emptyLabel="No reporter" people={people} t={t} />
           </select>
-        </label>
-        <label htmlFor="github-ref-input">
+        </label> : null}
+        {isOwner ? <label htmlFor="github-ref-input">
           {t("GitHub ref")}
           <input id="github-ref-input" value={draft.githubRef} onChange={(event) => setDraft({ ...draft, githubRef: event.currentTarget.value })} />
-        </label>
-        <label htmlFor="initiative-input">
+        </label> : null}
+        {isOwner ? <label htmlFor="initiative-input">
           {t("Initiative")}
           <input id="initiative-input" value={draft.initiative} onChange={(event) => setDraft({ ...draft, initiative: event.currentTarget.value })} />
-        </label>
+        </label> : null}
         <label className="wide-field" htmlFor="next-action-input">
           {t("Next action")}
           <input id="next-action-input" value={draft.nextAction} onChange={(event) => setDraft({ ...draft, nextAction: event.currentTarget.value })} />
         </label>
-        <label className="wide-field" htmlFor="description-input">
+        <label className="wide-field" htmlFor="result-input">
+          {t("Result")}
+          <textarea id="result-input" rows={3} value={draft.result} onChange={(event) => setDraft({ ...draft, result: event.currentTarget.value })} />
+        </label>
+        {isOwner ? <label className="wide-field" htmlFor="description-input">
           {t("Description")}
           <textarea id="description-input" rows={5} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.currentTarget.value })} />
-        </label>
+        </label> : null}
       </div>
       <div className="button-row">
         <button type="button" onClick={saveSelected}>

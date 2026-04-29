@@ -1,15 +1,16 @@
-import { Pencil } from "lucide-react";
+import { Pencil, Send, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { CommandBlock, ResultLine, SettingTile } from "../components/common";
 import { display, displayBoolean, errorMessage, relativeTime } from "../lib/format";
 import { checked, formField, formPayload, splitList } from "../lib/forms";
 import { filterRecords } from "../lib/tasks";
-import type { ApiClient, ChannelPolicy, OwnerMapping, PublicAccessPayload, ResultMessage, SetupStatus, Translator } from "../types";
+import type { ApiClient, ChannelPolicy, MemberInvitation, OwnerMapping, PublicAccessPayload, ResultMessage, SetupStatus, Translator } from "../types";
 
 export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; refreshKey: number; search: string; t: Translator }) {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [publicAccessPayload, setPublicAccessPayload] = useState<PublicAccessPayload | null>(null);
   const [owners, setOwners] = useState<OwnerMapping[]>([]);
+  const [invitations, setInvitations] = useState<MemberInvitation[]>([]);
   const [policies, setPolicies] = useState<ChannelPolicy[]>([]);
   const [editingOwner, setEditingOwner] = useState<OwnerMapping | null>(null);
   const [editingPolicy, setEditingPolicy] = useState<ChannelPolicy | null>(null);
@@ -21,15 +22,17 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
   const loadSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [setupData, publicAccessData, ownersData, channelsData] = await Promise.all([
+      const [setupData, publicAccessData, ownersData, invitesData, channelsData] = await Promise.all([
         api<SetupStatus>("/api/setup/status"),
         api<PublicAccessPayload>("/api/setup/public-access"),
         api<{ owners: OwnerMapping[] }>("/api/settings/owners"),
+        api<{ invitations: MemberInvitation[] }>("/api/settings/member-invites"),
         api<{ policies: ChannelPolicy[] }>("/api/settings/channels")
       ]);
       setSetup(setupData);
       setPublicAccessPayload(publicAccessData);
       setOwners(ownersData.owners || []);
+      setInvitations(invitesData.invitations || []);
       setPolicies(channelsData.policies || []);
     } catch (error) {
       setResult((current) => ({ ...current, settings: { text: errorMessage(error), ok: false } }));
@@ -132,6 +135,35 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
     }
   }
 
+  async function sendMemberInvites(resend: boolean) {
+    try {
+      const data = await api<{ invitations: MemberInvitation[]; outbox: unknown[]; skipped: Array<{ reason: string }> }>("/api/settings/member-invites", {
+        method: "POST",
+        body: JSON.stringify({ resend })
+      });
+      setResultMessage("invites", {
+        text: `${data.invitations.length} invitation DM${data.invitations.length === 1 ? "" : "s"} queued. ${data.skipped.length} skipped.`,
+        ok: true
+      });
+      await loadSettings();
+    } catch (error) {
+      setResultMessage("invites", { text: errorMessage(error), ok: false });
+    }
+  }
+
+  async function revokeInvite(id: string) {
+    try {
+      await api<{ invitation: MemberInvitation }>(`/api/settings/member-invites/${id}/revoke`, {
+        method: "POST",
+        body: "{}"
+      });
+      setResultMessage("invites", { text: "Invitation revoked.", ok: true });
+      await loadSettings();
+    } catch (error) {
+      setResultMessage("invites", { text: errorMessage(error), ok: false });
+    }
+  }
+
   async function onSaveChannelPolicy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -162,6 +194,7 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
   const publicAccess = publicAccessPayload?.publicAccess;
   const storage = setup?.storage || {};
   const filteredOwners = filterRecords(owners, ["ownerName", "slackUserId", "aliases"], search);
+  const filteredInvitations = filterRecords(invitations, ["ownerName", "slackUserId", "status", "email"], search);
   const filteredPolicies = filterRecords(policies, ["channelId", "mode"], search);
 
   return (
@@ -277,6 +310,10 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
                 <h2>{t("Owners")}</h2>
                 <p className="muted">{t("Map human owners to Slack users and aliases.")}</p>
               </div>
+              <button type="button" onClick={() => sendMemberInvites(false)}>
+                <Send className="icon" aria-hidden="true" />
+                <span>{t("Send Invites")}</span>
+              </button>
             </div>
             <form key={editingOwner?.id || "new-owner"} className="settings-form" onSubmit={onSaveOwner}>
               <input type="hidden" name="id" defaultValue={editingOwner?.id || ""} />
@@ -317,6 +354,36 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
                   </button>
                 </article>
               )) : <div className="empty-card">{t("No owners match this view.")}</div>}
+            </div>
+          </section>
+
+          <section className="panel wide-panel invites-panel">
+            <div className="list-head">
+              <div>
+                <h2>{t("Member Invitations")}</h2>
+                <p className="muted">{t("Slack DMs with one-time account links for approved owners.")}</p>
+              </div>
+              <button type="button" onClick={() => sendMemberInvites(true)}>
+                <Send className="icon" aria-hidden="true" />
+                <span>{t("Resend")}</span>
+              </button>
+            </div>
+            <ResultLine result={result.invites} t={t} />
+            <div className="compact-list">
+              {filteredInvitations.length ? filteredInvitations.map((invite) => (
+                <article key={invite.id} className="compact-item">
+                  <div>
+                    <strong>{invite.ownerName || invite.ownerId}</strong>
+                    <span>{invite.status} · {invite.slackUserId} · {invite.email || t("no email yet")} · {relativeTime(invite.updatedAt)}</span>
+                  </div>
+                  {invite.status === "pending" ? (
+                    <button className="icon-button" type="button" aria-label={t("Revoke")} title={t("Revoke")} onClick={() => revokeInvite(invite.id)}>
+                      <XCircle className="icon" aria-hidden="true" />
+                      <span className="sr-only">{t("Revoke")}</span>
+                    </button>
+                  ) : null}
+                </article>
+              )) : <div className="empty-card">{t("No invitations match this view.")}</div>}
             </div>
           </section>
 

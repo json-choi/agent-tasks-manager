@@ -1,14 +1,19 @@
 import { betterAuth } from "better-auth";
-import { bearer } from "better-auth/plugins";
 import type { AppConfig } from "../config/app-config";
 import type { TaskStore } from "../repositories/task-store.repository";
+import type { OwnerMapping, UserProfile } from "../shared/types";
 
-export interface AdminSession {
+export interface AuthUserSession {
   id: string;
   email: string;
   name: string;
   createdAt: Date | string;
+  role: UserProfile["role"];
+  profile: UserProfile;
+  owner: OwnerMapping | null;
 }
+
+export type AdminSession = AuthUserSession & { role: "owner" };
 
 export interface AuthService {
   auth: {
@@ -20,7 +25,7 @@ export interface AuthService {
       signOut(input: { headers: Headers; asResponse: true }): Promise<Response>;
     };
   };
-  getAdmin(request: Request): Promise<AdminSession | null>;
+  getUser(request: Request): Promise<AuthUserSession | null>;
 }
 
 export function createAuthService(config: AppConfig, store: TaskStore): AuthService {
@@ -35,22 +40,29 @@ export function createAuthService(config: AppConfig, store: TaskStore): AuthServ
     session: {
       expiresIn: config.sessionTtlDays * 24 * 60 * 60
     },
-    disabledPaths: ["/sign-up/email"],
-    plugins: [bearer()]
+    disabledPaths: ["/sign-up/email"]
   });
+
+  const getUser = async (request: Request): Promise<AuthUserSession | null> => {
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (!session?.user) return null;
+    const profile = store.getUserProfile(session.user.id);
+    if (!profile) return null;
+    const owner = profile.ownerId ? store.getOwner(profile.ownerId) : null;
+    return {
+      id: session.user.id,
+      email: session.user.email,
+      name: session.user.name,
+      createdAt: session.user.createdAt,
+      role: profile.role,
+      profile,
+      owner
+    };
+  };
 
   return {
     auth,
-    async getAdmin(request: Request) {
-      const session = await auth.api.getSession({ headers: request.headers });
-      if (!session?.user) return null;
-      return {
-        id: session.user.id,
-        email: session.user.email,
-        name: session.user.name,
-        createdAt: session.user.createdAt
-      };
-    }
+    getUser
   };
 }
 

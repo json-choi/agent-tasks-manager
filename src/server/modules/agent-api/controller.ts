@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { adapterFor } from "../../adapters/agent-adapter";
 import type { ServerContext } from "../../context";
 import { syncTaskToGitHub } from "../../services/github-sync.service";
+import { invitationUrl, memberInvitationToken, memberInviteAction } from "../../services/member-invitation.service";
 import {
   filterCardTasks,
   inferPriorityFromText,
@@ -13,10 +14,10 @@ import {
 } from "../../services/slack-task.service";
 import { inferTaskCategory } from "../../services/task-classification.service";
 import { parseTaskPriority, parseTaskState, signalToStatus } from "../../shared/parsers";
-import type { AgentSettings, AssignmentRequest, OwnerMapping, SlackAction, Task, TaskState } from "../../shared/types";
+import type { AgentSettings, AssignmentRequest, OutboxItem, OwnerMapping, SlackAction, Task, TaskState } from "../../shared/types";
 import { asRecord, booleanValue, jsonResponse, numberValue, safeJsonParse, stringValue } from "../../shared/utils";
 
-export function agentApiController({ store, requireAgent }: ServerContext) {
+export function agentApiController({ config, store, requireAgent }: ServerContext) {
   return new Elysia({ name: "agent-api.controller" })
     .post("/api/agent/connect/test", ({ request, body }) => {
       const auth = requireAgent(request);
@@ -532,7 +533,7 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
 
       store.markAgentSeen(auth.agent.id);
       const limit = Math.min(Math.max(Number(query.limit ?? "25"), 1), 100);
-      return { outbox: store.listOutbox(auth.agent.id, limit) };
+      return { outbox: store.listOutbox(auth.agent.id, limit).map((item) => hydrateMemberInviteOutbox(item, store, config)) };
     })
     .post("/api/agent/outbox/:id/ack", ({ request, params }) => {
       const auth = requireAgent(request);
@@ -542,6 +543,36 @@ export function agentApiController({ store, requireAgent }: ServerContext) {
       if (!item) return jsonResponse({ error: "Outbox item not found" }, 404);
       return { ok: true, outbox: item };
     });
+}
+
+function hydrateMemberInviteOutbox(
+  item: OutboxItem,
+  store: ServerContext["store"],
+  config: ServerContext["config"]
+): OutboxItem {
+  const payload = asRecord(item.payload);
+  if (Array.isArray(payload.actions)) return item;
+
+  const invitationId = stringValue(payload.memberInvitationId);
+  const ownerId = stringValue(payload.ownerId);
+  if (!invitationId || !ownerId) return item;
+
+  const invitation = store.getMemberInvitation(invitationId);
+  const owner = store.getOwner(ownerId);
+  if (!invitation || invitation.status !== "pending" || !owner?.slackUserId) return item;
+
+  return {
+    ...item,
+    payload: {
+      ...payload,
+      actions: [
+        memberInviteAction(
+          owner,
+          invitationUrl(config, memberInvitationToken(config, invitation.id))
+        )
+      ]
+    }
+  };
 }
 
 function resolveAssignmentOwner(store: ServerContext["store"], value: string | null | undefined): OwnerMapping | null {

@@ -27,6 +27,37 @@ export const agentTypes = ["openclaw"] as const;
 
 export type AgentType = (typeof agentTypes)[number];
 
+export const userRoles = ["owner", "member"] as const;
+
+export type UserRole = (typeof userRoles)[number];
+
+export interface UserProfile {
+  userId: string;
+  role: UserRole;
+  ownerId: string | null;
+  slackUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type MemberInvitationStatus = "pending" | "accepted" | "revoked" | "expired";
+
+export interface MemberInvitation {
+  id: string;
+  ownerId: string;
+  ownerName: string | null;
+  slackUserId: string;
+  email: string | null;
+  status: MemberInvitationStatus;
+  expiresAt: string;
+  acceptedUserId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+}
+
 export interface SlackAction {
   kind: "thread_reply" | "dm" | "reaction";
   channelId?: string | null;
