@@ -156,6 +156,8 @@ function ensureAdmin(runtime: Runtime, options: BootstrapOptions): Promise<Boots
         };
       }
 
+      const payload = await response.json().catch(() => null) as { user?: { id: string } } | null;
+      if (payload?.user) runtime.store.ensureOwnerProfile(payload.user.id);
       runtime.store.recordAudit("admin.created", { email: options.adminEmail!.toLowerCase(), provider: "bootstrap" });
       runtime.store.refreshAppConfig();
       return { status: "created", message: "Admin created from bootstrap environment." };

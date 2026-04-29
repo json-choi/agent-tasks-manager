@@ -52,12 +52,15 @@ describe("task-manager core", () => {
       }
     });
     expect(setup.status).toBe(201);
+    const setupCookie = cookieHeader(setup);
     const setupBody = await setup.json();
     expect(setupBody.setupLocked).toBe(true);
+    expect(setupBody.token).toBeUndefined();
+    expect(runtime.store.getUserProfile(setupBody.admin.id)?.role).toBe("owner");
 
     const reviewed = await request(runtime, "/api/setup/review", {
       method: "PATCH",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: { slackPermissionsReviewed: true }
     });
     expect(reviewed.status).toBe(200);
@@ -70,7 +73,7 @@ describe("task-manager core", () => {
 
     const publicAccess = await request(runtime, "/api/setup/public-access", {
       method: "PATCH",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: {
         mode: "remote",
         publicUrl: "https://tasks.example.com",
@@ -103,7 +106,7 @@ describe("task-manager core", () => {
 
     const reporterOwner = await request(runtime, "/api/settings/owners", {
       method: "POST",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: {
         ownerName: "PM",
         slackUserId: "U_PM",
@@ -114,7 +117,7 @@ describe("task-manager core", () => {
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: {
         title: "Write launch checklist",
         description: "Prepare the initial rollout checklist.",
@@ -140,7 +143,7 @@ describe("task-manager core", () => {
 
     const invalidOwner = await request(runtime, "/api/tasks", {
       method: "POST",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: {
         title: "Invalid owner",
         assignee: "not-a-slack-user"
@@ -150,7 +153,7 @@ describe("task-manager core", () => {
 
     const updated = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
       method: "PATCH",
-      token: setupBody.token,
+      cookie: setupCookie,
       body: { status: "done" }
     });
     expect(updated.status).toBe(200);
@@ -163,10 +166,30 @@ describe("task-manager core", () => {
     expect(markdown).toContain("# Write launch checklist");
   });
 
+  test("legacy Better Auth users without profiles are backfilled as the owner", async () => {
+    const runtime = await makeRuntime();
+    const created = await runtime.auth.auth.api.signUpEmail({
+      body: { email: "legacy@example.com", password: "password123", name: "Legacy Owner" },
+      asResponse: true
+    });
+    expect(created.ok).toBe(true);
+    const createdBody = await created.json();
+    expect(runtime.store.getUserProfile(createdBody.user.id)).toBeNull();
+
+    const dataDir = runtime.config.dataDir;
+    runtime.store.close();
+    const runtimeIndex = runtimes.indexOf(runtime);
+    if (runtimeIndex >= 0) runtimes.splice(runtimeIndex, 1);
+
+    const migrated = await createRuntime({ dataDir, publicBaseUrl: "http://localhost:3011" });
+    runtimes.push(migrated);
+    expect(migrated.store.getUserProfile(createdBody.user.id)).toMatchObject({ role: "owner" });
+  });
+
   test("agent token flow proposes once per Slack thread and processes assignment/status", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
 
     const connect = await agentRequest(runtime, agent, "/api/agent/connect/test", {
       method: "POST",
@@ -176,7 +199,7 @@ describe("task-manager core", () => {
 
     await request(runtime, "/api/settings/owners", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         ownerName: "Deploy Owner",
         slackUserId: "U222",
@@ -268,8 +291,8 @@ describe("task-manager core", () => {
 
   test("manual_only channels ignore automatic proposals until suggest_only is configured", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
     const context = {
       channelId: "C999",
       threadTs: "1710000000.000200",
@@ -285,7 +308,7 @@ describe("task-manager core", () => {
 
     await request(runtime, "/api/settings/channels", {
       method: "PATCH",
-      token: adminToken,
+      cookie: adminCookie,
       body: { channelId: "C999", mode: "suggest_only" }
     });
 
@@ -299,12 +322,12 @@ describe("task-manager core", () => {
 
   test("owner mappings drive task cards and queued daily digests", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
 
     const owner = await request(runtime, "/api/settings/owners", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         ownerName: "Alice",
         slackUserId: "U222",
@@ -323,7 +346,7 @@ describe("task-manager core", () => {
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         title: "Review release blocker",
         description: "Check the deploy failure before launch.",
@@ -365,12 +388,12 @@ describe("task-manager core", () => {
 
   test("OpenClaw assignment interactions can delegate and then accept ownership", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
 
     const alice = await request(runtime, "/api/settings/owners", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         ownerName: "Alice",
         slackUserId: "U_ALICE",
@@ -380,7 +403,7 @@ describe("task-manager core", () => {
     const aliceBody = await alice.json();
     const bob = await request(runtime, "/api/settings/owners", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         ownerName: "Bob",
         slackUserId: "U_BOB",
@@ -449,10 +472,222 @@ describe("task-manager core", () => {
     expect(acceptedBody.task.assignee).toBe("Bob");
   });
 
+  test("owner can invite approved Slack members and members only access their tasks", async () => {
+    const runtime = await makeRuntime();
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
+
+    const alice = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Alice",
+        slackUserId: "U_ALICE",
+        aliases: ["alice"]
+      }
+    });
+    const aliceBody = await alice.json();
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "No Slack",
+        aliases: ["noslack"]
+      }
+    });
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Inactive",
+        slackUserId: "U_INACTIVE",
+        active: false
+      }
+    });
+
+    const emptySelection = await request(runtime, "/api/settings/member-invites", {
+      method: "POST",
+      cookie: adminCookie,
+      body: { ownerIds: [] }
+    });
+    const emptySelectionBody = await emptySelection.json();
+    expect(emptySelectionBody.invitations).toHaveLength(0);
+
+    const invited = await request(runtime, "/api/settings/member-invites", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {}
+    });
+    expect(invited.status).toBe(200);
+    const invitedBody = await invited.json();
+    expect(invitedBody.invitations).toHaveLength(1);
+    expect(invitedBody.invitations[0].ownerId).toBe(aliceBody.owner.id);
+    expect(invitedBody.outbox).toHaveLength(1);
+    expect(invitedBody.outbox[0].payload.memberInvitationId).toBe(invitedBody.invitations[0].id);
+
+    const inviteOutbox = await agentRequest(runtime, agent, "/api/agent/outbox");
+    const inviteOutboxBody = await inviteOutbox.json();
+    expect(inviteOutboxBody.outbox[0].payload.actions[0].kind).toBe("dm");
+    expect(inviteOutboxBody.outbox[0].payload.actions[0].userId).toBe("U_ALICE");
+
+    const duplicate = await request(runtime, "/api/settings/member-invites", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {}
+    });
+    const duplicateBody = await duplicate.json();
+    expect(duplicateBody.invitations).toHaveLength(0);
+    expect(duplicateBody.skipped[0].reason).toBe("pending_invitation");
+
+    const token = inviteTokenFromAction(inviteOutboxBody.outbox[0].payload.actions[0]);
+    const accepted = await request(runtime, "/api/invitations/accept", {
+      method: "POST",
+      body: {
+        token,
+        email: "alice@example.com",
+        password: "password123",
+        name: "Alice"
+      }
+    });
+    expect(accepted.status).toBe(201);
+    const memberCookie = cookieHeader(accepted);
+    const acceptedBody = await accepted.json();
+    expect(acceptedBody.role).toBe("member");
+    expect(acceptedBody.token).toBeUndefined();
+    expect(acceptedBody.owner.ownerName).toBe("Alice");
+    expect(runtime.store.getUserProfile(acceptedBody.user.id)).toMatchObject({
+      role: "member",
+      ownerId: aliceBody.owner.id,
+      slackUserId: "U_ALICE"
+    });
+
+    const memberSettings = await request(runtime, "/api/settings/member-invites", {
+      cookie: memberCookie
+    });
+    expect(memberSettings.status).toBe(403);
+
+    const aliceTask = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Alice task",
+        assignee: "Alice",
+        status: "confirmed"
+      }
+    });
+    const aliceTaskBody = await aliceTask.json();
+    const otherTask = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Owner task",
+        status: "confirmed"
+      }
+    });
+    const otherTaskBody = await otherTask.json();
+
+    const memberTasks = await request(runtime, "/api/tasks", { cookie: memberCookie });
+    expect(memberTasks.status).toBe(200);
+    const memberTasksBody = await memberTasks.json();
+    expect(memberTasksBody.tasks.map((task: { id: string }) => task.id)).toEqual([aliceTaskBody.task.id]);
+
+    const forbiddenTask = await request(runtime, `/api/tasks/${otherTaskBody.task.id}`, { cookie: memberCookie });
+    expect(forbiddenTask.status).toBe(404);
+
+    const memberPatch = await request(runtime, `/api/tasks/${aliceTaskBody.task.id}`, {
+      method: "PATCH",
+      cookie: memberCookie,
+      body: {
+        status: "in_progress",
+        nextAction: "Ship the update",
+        result: "Started"
+      }
+    });
+    expect(memberPatch.status).toBe(200);
+    const memberPatchBody = await memberPatch.json();
+    expect(memberPatchBody.task.status).toBe("in_progress");
+    expect(memberPatchBody.task.nextAction).toBe("Ship the update");
+    expect(memberPatchBody.task.result).toBe("Started");
+
+    const forbiddenPatch = await request(runtime, `/api/tasks/${aliceTaskBody.task.id}`, {
+      method: "PATCH",
+      cookie: memberCookie,
+      body: {
+        priority: "P0"
+      }
+    });
+    expect(forbiddenPatch.status).toBe(403);
+
+    const reused = await request(runtime, "/api/invitations/accept", {
+      method: "POST",
+      body: {
+        token,
+        email: "alice-again@example.com",
+        password: "password123"
+      }
+    });
+    expect(reused.status).toBe(409);
+  });
+
+  test("member invitations reject revoked and expired tokens", async () => {
+    const runtime = await makeRuntime();
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
+    const ownerResponse = await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Bob",
+        slackUserId: "U_BOB"
+      }
+    });
+    const owner = (await ownerResponse.json()).owner;
+
+    const invited = await request(runtime, "/api/settings/member-invites", {
+      method: "POST",
+      cookie: adminCookie,
+      body: { ownerIds: [owner.id] }
+    });
+    const invitedBody = await invited.json();
+    const inviteOutbox = await agentRequest(runtime, agent, "/api/agent/outbox");
+    const inviteOutboxBody = await inviteOutbox.json();
+    const revokedToken = inviteTokenFromAction(inviteOutboxBody.outbox[0].payload.actions[0]);
+    const revoked = await request(runtime, `/api/settings/member-invites/${invitedBody.invitations[0].id}/revoke`, {
+      method: "POST",
+      cookie: adminCookie,
+      body: {}
+    });
+    expect(revoked.status).toBe(200);
+
+    const revokedAccept = await request(runtime, "/api/invitations/accept", {
+      method: "POST",
+      body: {
+        token: revokedToken,
+        email: "bob@example.com",
+        password: "password123"
+      }
+    });
+    expect(revokedAccept.status).toBe(409);
+
+    const expired = runtime.store.createMemberInvitation({
+      owner,
+      expiresAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    const expiredAccept = await request(runtime, "/api/invitations/accept", {
+      method: "POST",
+      body: {
+        token: expired.token,
+        email: "expired@example.com",
+        password: "password123"
+      }
+    });
+    expect(expiredAccept.status).toBe(409);
+  });
+
   test("Slack digest collect and commit creates low-token task proposals and advances cursor", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
 
     const collected = await agentRequest(runtime, agent, "/api/agent/slack/digest/collect", {
       method: "POST",
@@ -482,7 +717,7 @@ describe("task-manager core", () => {
     expect(collectedBody.digest.payload.candidates).toHaveLength(1);
     expect(collectedBody.cursor).toBe(null);
 
-    const beforeCommit = await request(runtime, "/api/tasks", { token: adminToken });
+    const beforeCommit = await request(runtime, "/api/tasks", { cookie: adminCookie });
     const beforeCommitBody = await beforeCommit.json();
     expect(beforeCommitBody.tasks).toHaveLength(0);
 
@@ -498,18 +733,18 @@ describe("task-manager core", () => {
     expect(committedBody.cursor.lastTs).toBe("1710000001.000400");
     expect(committedBody.actions[0].kind).toBe("thread_reply");
 
-    const afterCommit = await request(runtime, "/api/tasks", { token: adminToken });
+    const afterCommit = await request(runtime, "/api/tasks", { cookie: adminCookie });
     const afterCommitBody = await afterCommit.json();
     expect(afterCommitBody.tasks).toHaveLength(1);
   });
 
   test("GitHub settings persist and disabled sync records a skipped run without network", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
 
     const updated = await request(runtime, "/api/settings/github", {
       method: "PATCH",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         enabled: false,
         autoCreateIssues: true,
@@ -528,7 +763,7 @@ describe("task-manager core", () => {
 
     const sync = await request(runtime, "/api/integrations/github/sync", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {}
     });
     expect(sync.status).toBe(200);
@@ -539,13 +774,13 @@ describe("task-manager core", () => {
 
   test("agent-created coding tasks auto-create GitHub issues", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
-    const agent = await createAgent(runtime, adminToken, "openclaw");
+    const adminCookie = await createAdmin(runtime);
+    const agent = await createAgent(runtime, adminCookie, "openclaw");
     process.env.GITHUB_TOKEN = "gh_test_token";
 
     await request(runtime, "/api/settings/github", {
       method: "PATCH",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         enabled: true,
         autoCreateIssues: true,
@@ -592,7 +827,7 @@ describe("task-manager core", () => {
     expect(firstCall!.body.labels).toEqual(["task-manager", "frontend", "category:coding", "priority:P2", "status:confirmed"]);
     expect(String(firstCall!.body.body)).toContain(`Task Manager ID: ${proposedBody.task.id}`);
 
-    const created = await request(runtime, `/api/tasks/${proposedBody.task.id}`, { token: adminToken });
+    const created = await request(runtime, `/api/tasks/${proposedBody.task.id}`, { cookie: adminCookie });
     const createdBody = await created.json();
     const markdown = readFileSync(createdBody.task.markdownPath, "utf8");
     expect(markdown).toContain('category: "coding"');
@@ -601,12 +836,12 @@ describe("task-manager core", () => {
 
   test("general tasks are not auto-created as GitHub issues", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
     process.env.GITHUB_TOKEN = "gh_test_token";
 
     await request(runtime, "/api/settings/github", {
       method: "PATCH",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         enabled: true,
         autoCreateIssues: true,
@@ -622,7 +857,7 @@ describe("task-manager core", () => {
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         title: "Prepare stakeholder agenda",
         description: "Collect agenda items for the weekly sync.",
@@ -640,12 +875,12 @@ describe("task-manager core", () => {
 
   test("GitHub issue webhooks update linked task status", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
     process.env.GITHUB_WEBHOOK_SECRET = "webhook-secret";
 
     await request(runtime, "/api/settings/github", {
       method: "PATCH",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         enabled: true,
         autoUpdateTaskStatusFromGitHub: true,
@@ -655,7 +890,7 @@ describe("task-manager core", () => {
 
     const created = await request(runtime, "/api/tasks", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         title: "Fix webhook status sync",
         description: "Implement GitHub issue webhook status sync.",
@@ -694,7 +929,7 @@ describe("task-manager core", () => {
     expect(reopenedBody.sync.status).toBe("updated");
     expect(reopenedBody.sync.task.status).toBe("in_progress");
 
-    const final = await request(runtime, `/api/tasks/${createdBody.task.id}`, { token: adminToken });
+    const final = await request(runtime, `/api/tasks/${createdBody.task.id}`, { cookie: adminCookie });
     const finalBody = await final.json();
     expect(finalBody.task.status).toBe("in_progress");
     expect(finalBody.task.githubRef).toBe("acme/web#7");
@@ -702,7 +937,7 @@ describe("task-manager core", () => {
 
   test("setup can automatically install plugin files into a local agent workspace", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-agent-workspace-"));
     tempDirs.push(workspacePath);
     mkdirSync(join(workspacePath, "plugins", "task-manager"), { recursive: true });
@@ -712,7 +947,7 @@ describe("task-manager core", () => {
 
     const response = await request(runtime, "/api/setup/agent/install", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         type: "openclaw",
         workspacePath,
@@ -739,7 +974,7 @@ describe("task-manager core", () => {
 
     const uninstall = await request(runtime, "/api/setup/agent/uninstall", {
       method: "POST",
-      token: adminToken,
+      cookie: adminCookie,
       body: {
         type: "openclaw",
         workspacePath,
@@ -767,14 +1002,14 @@ describe("task-manager core", () => {
 
   test("setup detects workspace from environment when path is omitted", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-detected-"));
     tempDirs.push(workspacePath);
     process.env.OPENCLAW_WORKSPACE = workspacePath;
 
     try {
       const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
-        token: adminToken
+        cookie: adminCookie
       });
       expect(detected.status).toBe(200);
       const detectedBody = await detected.json();
@@ -782,7 +1017,7 @@ describe("task-manager core", () => {
 
       const response = await request(runtime, "/api/setup/agent/install", {
         method: "POST",
-        token: adminToken,
+        cookie: adminCookie,
         body: {
           type: "openclaw",
           runReload: false,
@@ -800,14 +1035,14 @@ describe("task-manager core", () => {
 
   test("setup detects workspace from task-manager environment variable", async () => {
     const runtime = await makeRuntime();
-    const adminToken = await createAdmin(runtime);
+    const adminCookie = await createAdmin(runtime);
     const workspacePath = mkdtempSync(join(tmpdir(), "tm-openclaw-mounted-"));
     tempDirs.push(workspacePath);
     process.env.TASK_MANAGER_OPENCLAW_WORKSPACE = workspacePath;
 
     try {
       const detected = await request(runtime, "/api/setup/agent/workspaces?type=openclaw", {
-        token: adminToken
+        cookie: adminCookie
       });
       expect(detected.status).toBe(200);
       const detectedBody = await detected.json();
@@ -909,14 +1144,14 @@ async function createAdmin(runtime: Runtime): Promise<string> {
     method: "POST",
     body: { email: "admin@example.com", password: "password123" }
   });
-  const body = await response.json();
-  return body.token;
+  expect(response.status).toBe(201);
+  return cookieHeader(response);
 }
 
-async function createAgent(runtime: Runtime, token: string, type: "openclaw") {
+async function createAgent(runtime: Runtime, cookie: string, type: "openclaw") {
   const response = await request(runtime, "/api/settings/agents", {
     method: "PATCH",
-    token,
+    cookie,
     body: { type, name: type, regenerateToken: true }
   });
   const body = await response.json();
@@ -929,17 +1164,27 @@ async function createAgent(runtime: Runtime, token: string, type: "openclaw") {
 async function request(
   runtime: Runtime,
   path: string,
-  options: { method?: string; token?: string; body?: unknown } = {}
+  options: { method?: string; cookie?: string; body?: unknown } = {}
 ): Promise<Response> {
   const headers = new Headers();
   if (options.body !== undefined) headers.set("content-type", "application/json");
-  if (options.token) headers.set("authorization", `Bearer ${options.token}`);
+  if (options.cookie) headers.set("cookie", options.cookie);
   const init: RequestInit = {
     method: options.method ?? "GET",
     headers
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   return runtime.app.handle(new Request(`http://localhost${path}`, init));
+}
+
+function cookieHeader(response: Response): string {
+  const raw = response.headers.get("set-cookie");
+  if (!raw) throw new Error("Response did not include a session cookie");
+  return raw
+    .split(/,(?=\s*[^;,]+=)/)
+    .map((part) => part.split(";")[0]?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join("; ");
 }
 
 async function agentRequest(
@@ -959,6 +1204,18 @@ async function agentRequest(
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   return runtime.app.handle(new Request(`http://localhost${path}`, init));
+}
+
+function inviteTokenFromAction(action: Record<string, unknown>): string {
+  const blocks = Array.isArray(action.blocks) ? action.blocks as Array<Record<string, unknown>> : [];
+  for (const block of blocks) {
+    const elements = Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [];
+    const button = elements.find((element) => typeof element.url === "string");
+    if (button?.url) {
+      return new URL(String(button.url)).pathname.split("/").filter(Boolean).at(-1) ?? "";
+    }
+  }
+  throw new Error("Invite URL button not found");
 }
 
 async function githubWebhook(runtime: Runtime, payload: Record<string, unknown>): Promise<Response> {

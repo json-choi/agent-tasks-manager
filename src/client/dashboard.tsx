@@ -6,16 +6,16 @@ import { apiRequest } from "./lib/api";
 import { errorMessage } from "./lib/format";
 import { formPayload } from "./lib/forms";
 import { taskViews } from "./lib/tasks";
-import type { ApiClient, OwnerMapping, ResultMessage, Task, View } from "./types";
+import type { ApiClient, AuthSessionPayload, OwnerMapping, ResultMessage, Task, View } from "./types";
 import { AgentsView } from "./views/agents-view";
 import { IntegrationsView } from "./views/integrations-view";
 import { SettingsView } from "./views/settings-view";
 import { TaskWorkspace } from "./views/tasks-view";
 
 function DashboardApp() {
-  const [token, setToken] = useState(() => localStorage.getItem("tm_admin_token") || "");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isBooting, setIsBooting] = useState(Boolean(token));
+  const [isBooting, setIsBooting] = useState(true);
+  const [session, setSession] = useState<AuthSessionPayload | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [people, setPeople] = useState<OwnerMapping[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -27,17 +27,21 @@ function DashboardApp() {
   const [secondaryRefreshKey, setSecondaryRefreshKey] = useState(0);
 
   const t = useCallback((value: string) => translateText(value, language), [language]);
-  const api = useCallback<ApiClient>((path, options) => apiRequest(path, token, options), [token]);
+  const api = useCallback<ApiClient>((path, options) => apiRequest(path, options), []);
 
-  const loadTasks = useCallback(async (activeToken = token) => {
+  const loadTasks = useCallback(async () => {
+    const sessionData = await apiRequest<AuthSessionPayload>("/api/auth/session");
     const [tasksData, ownersData] = await Promise.all([
-      apiRequest<{ tasks: Task[] }>("/api/tasks", activeToken),
-      apiRequest<{ owners: OwnerMapping[] }>("/api/settings/owners", activeToken)
+      apiRequest<{ tasks: Task[] }>("/api/tasks"),
+      sessionData.role === "owner"
+        ? apiRequest<{ owners: OwnerMapping[] }>("/api/settings/owners")
+        : Promise.resolve({ owners: sessionData.owner ? [sessionData.owner] : [] })
     ]);
+    setSession(sessionData);
     setTasks(tasksData.tasks || []);
     setPeople(ownersData.owners || []);
     setIsAuthenticated(true);
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -48,15 +52,9 @@ function DashboardApp() {
     let cancelled = false;
 
     async function bootSession() {
-      if (!token) {
-        setIsAuthenticated(false);
-        setIsBooting(false);
-        return;
-      }
-
       setIsBooting(true);
       try {
-        await loadTasks(token);
+        await loadTasks();
       } catch (error) {
         if (cancelled) return;
         setIsAuthenticated(false);
@@ -70,7 +68,7 @@ function DashboardApp() {
     return () => {
       cancelled = true;
     };
-  }, [loadTasks, token]);
+  }, [loadTasks]);
 
   useEffect(() => {
     if (selectedId && !tasks.some((task) => task.id === selectedId)) {
@@ -78,31 +76,34 @@ function DashboardApp() {
     }
   }, [selectedId, tasks]);
 
+  useEffect(() => {
+    if (session?.role === "member" && !taskViews.includes(view)) {
+      setView("dashboard");
+    }
+  }, [session?.role, view]);
+
   async function onLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoginResult(null);
     const form = event.currentTarget;
 
     try {
-      const data = await apiRequest<{ token?: string }>("/api/auth/login", "", {
+      const data = await apiRequest<AuthSessionPayload>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify(formPayload(form))
       });
-      if (!data.token) throw new Error("Login did not return a session token.");
 
-      localStorage.setItem("tm_admin_token", data.token);
-      setToken(data.token);
+      setSession(data);
       setLoginResult({ text: "Logged in.", ok: true });
-      await loadTasks(data.token);
+      await loadTasks();
     } catch (error) {
       setLoginResult({ text: errorMessage(error), ok: false });
     }
   }
 
   async function onLogout() {
-    await apiRequest("/api/auth/logout", token, { method: "POST", body: "{}" }).catch(() => null);
-    localStorage.removeItem("tm_admin_token");
-    setToken("");
+    await apiRequest("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => null);
+    setSession(null);
     setTasks([]);
     setPeople([]);
     setSelectedId(null);
@@ -146,11 +147,12 @@ function DashboardApp() {
   }
 
   const selectedTask = selectedId ? tasks.find((task) => task.id === selectedId) ?? null : null;
+  const isOwner = session?.role === "owner";
 
   return (
     <main className="dashboard-shell">
       <section className={`app-shell-frame view-${view}`}>
-        <Sidebar activeView={view} t={t} onLogout={onLogout} onViewChange={setView} />
+        <Sidebar activeView={view} isOwner={isOwner} t={t} onLogout={onLogout} onViewChange={setView} />
         <section className="app-main">
           <Topbar
             language={language}
@@ -164,6 +166,7 @@ function DashboardApp() {
           {taskViews.includes(view) ? (
             <TaskWorkspace
               api={api}
+              isOwner={isOwner}
               people={people}
               result={taskResult}
               search={search}

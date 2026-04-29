@@ -1,8 +1,9 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { adapterFor } from "../../adapters/agent-adapter";
 import type { ServerContext } from "../../context";
 import type { UpsertAgentInput } from "../../repositories/task-store.repository";
 import { buildAgentQuickStart } from "../../services/agent-onboarding.service";
+import { enqueueMemberInvitations } from "../../services/member-invitation.service";
 import { asStringMap, parseAgentType, parseChannelMode, parseGitHubRule } from "../../shared/parsers";
 import { asRecord, booleanValue, jsonResponse, stringValue } from "../../shared/utils";
 
@@ -77,6 +78,38 @@ export function settingsController({ config, store, requireAdmin }: ServerContex
       return {
         owner: store.upsertOwner(ownerId ? { ...ownerInput, id: ownerId } : ownerInput)
       };
+    })
+    .get("/api/settings/member-invites", async ({ request }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+      return { invitations: store.listMemberInvitations() };
+    })
+    .post("/api/settings/member-invites", async ({ request, body }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+
+      const result = enqueueMemberInvitations({
+        store,
+        config,
+        ...(body.ownerIds ? { ownerIds: body.ownerIds } : {}),
+        ...(body.resend !== undefined ? { resend: body.resend } : {}),
+        createdByUserId: auth.admin.id
+      });
+      if (!result.ok) return jsonResponse({ error: "No OpenClaw agent is configured for Slack DMs", ...result }, 409);
+      return result;
+    }, {
+      body: t.Object({
+        ownerIds: t.Optional(t.Array(t.String())),
+        resend: t.Optional(t.Boolean())
+      })
+    })
+    .post("/api/settings/member-invites/:id/revoke", async ({ request, params }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+
+      const invitation = store.revokeMemberInvitation(params.id);
+      if (!invitation) return jsonResponse({ error: "Invitation not found" }, 404);
+      return { invitation };
     })
     .get("/api/settings/github", async ({ request }) => {
       const auth = await requireAdmin(request);
