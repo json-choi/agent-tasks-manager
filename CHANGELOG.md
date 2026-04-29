@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/json-choi/agent-task-manager/compare/agent-task-manager-v0.3.0...agent-task-manager-v0.4.0) (2026-04-29)
+
+
+### Features
+
+* add Slack member invitations ([a931c2a](https://github.com/json-choi/agent-task-manager/commit/a931c2a5d251ad17919c743d38d60a8f5a47f58f))
+
 ## [0.3.0](https://github.com/json-choi/agent-task-manager/compare/agent-task-manager-v0.2.0...agent-task-manager-v0.3.0) (2026-04-28)
 
 
