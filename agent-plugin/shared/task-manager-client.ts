@@ -244,7 +244,15 @@ export function classifyTaskCommand(text: string): TaskCommand {
   if (
     normalized.startsWith("/task") ||
     normalized.includes("태스크로 만들어줘") ||
+    normalized.includes("태스크로 만들어") ||
     normalized.includes("스레드 태스크로 정리해줘") ||
+    normalized.includes("태스크로 정리") ||
+    normalized.includes("태스크에 넣어") ||
+    normalized.includes("태스크 넣어") ||
+    normalized.includes("태스크 추가") ||
+    normalized.includes("태스크 등록") ||
+    normalized.includes("할 일로 넣어") ||
+    normalized.includes("업무로 넣어") ||
     normalized.includes("make this a task")
   ) {
     return { type: "propose", assigneeId };
