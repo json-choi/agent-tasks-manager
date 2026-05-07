@@ -5,7 +5,7 @@ import { LoginScreen, Sidebar, Topbar } from "./components/layout";
 import { apiRequest } from "./lib/api";
 import { errorMessage } from "./lib/format";
 import { formPayload } from "./lib/forms";
-import { taskViews } from "./lib/tasks";
+import { insertTaskIntoBoardState, reconcileTaskBoardDropState, taskViews } from "./lib/tasks";
 import type { ApiClient, AuthSessionPayload, OwnerMapping, ResultMessage, Task, View } from "./types";
 import { AgentsView } from "./views/agents-view";
 import { IntegrationsView } from "./views/integrations-view";
@@ -19,11 +19,11 @@ function DashboardApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [people, setPeople] = useState<OwnerMapping[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<View>("dashboard");
   const [language, setLanguage] = useState<UiLanguage>(initialUiLanguage);
   const [loginResult, setLoginResult] = useState<ResultMessage | null>(null);
-  const [taskResult, setTaskResult] = useState<ResultMessage | null>(null);
   const [secondaryRefreshKey, setSecondaryRefreshKey] = useState(0);
 
   const t = useCallback((value: string) => translateText(value, language), [language]);
@@ -73,8 +73,21 @@ function DashboardApp() {
   useEffect(() => {
     if (selectedId && !tasks.some((task) => task.id === selectedId)) {
       setSelectedId(null);
+      setSelectedMemberId(null);
     }
   }, [selectedId, tasks]);
+
+  const onSelectTask = useCallback((id: string | null, memberId?: string | null) => {
+    setSelectedId(id);
+    setSelectedMemberId((currentMemberId) => {
+      if (!id) return null;
+      return memberId === undefined ? currentMemberId : memberId;
+    });
+  }, []);
+
+  const onTaskUpdated = useCallback((updatedTask: Task) => {
+    setTasks((currentTasks) => reconcileTaskBoardDropState(currentTasks, updatedTask));
+  }, []);
 
   useEffect(() => {
     if (session?.role === "member" && !taskViews.includes(view)) {
@@ -106,7 +119,7 @@ function DashboardApp() {
     setSession(null);
     setTasks([]);
     setPeople([]);
-    setSelectedId(null);
+    onSelectTask(null);
     setIsAuthenticated(false);
   }
 
@@ -118,18 +131,17 @@ function DashboardApp() {
     setSecondaryRefreshKey((key) => key + 1);
   }
 
-  async function onCreateTask(event: FormEvent<HTMLFormElement>) {
+  async function onCreateTask(event: FormEvent<HTMLFormElement>): Promise<Task | null> {
     event.preventDefault();
     const form = event.currentTarget;
-    setTaskResult(null);
 
     try {
-      await api("/api/tasks", { method: "POST", body: JSON.stringify(formPayload(form)) });
+      const data = await api<{ task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(formPayload(form)) });
       form.reset();
-      setTaskResult({ text: "Task created.", ok: true });
-      await loadTasks();
+      setTasks((currentTasks) => insertTaskIntoBoardState(currentTasks, data.task));
+      return data.task;
     } catch (error) {
-      setTaskResult({ text: errorMessage(error), ok: false });
+      throw error;
     }
   }
 
@@ -168,15 +180,16 @@ function DashboardApp() {
               api={api}
               isOwner={isOwner}
               people={people}
-              result={taskResult}
               search={search}
+              selectedMemberId={selectedMemberId}
               selectedTask={selectedTask}
               tasks={tasks}
               t={t}
               view={view}
               onCreateTask={onCreateTask}
               onReloadTasks={loadTasks}
-              onSelectTask={setSelectedId}
+              onSelectTask={onSelectTask}
+              onTaskUpdated={onTaskUpdated}
             />
           ) : (
             <SecondaryView api={api} refreshKey={secondaryRefreshKey} search={search} t={t} view={view} />
