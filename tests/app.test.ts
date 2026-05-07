@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { classifyTaskCommand } from "../agent-plugin/shared/task-manager-client";
 import { taskMemberColumns, taskStatusGroupSections } from "../src/client/lib/tasks";
 import { createRuntime } from "../src/server/app";
 import type { Runtime } from "../src/server/context";
@@ -27,6 +28,20 @@ afterEach(() => {
 });
 
 describe("task-manager core", () => {
+  test("OpenClaw plugin classifies common Korean task creation phrases", () => {
+    const phrases = [
+      "검색 고도화 작업 태스크에 넣어줘",
+      "검색 고도화 작업 태스크 추가해줘",
+      "검색 고도화 작업 태스크 등록해줘",
+      "이거 할 일로 넣어줘",
+      "이 내용 업무로 넣어줘"
+    ];
+
+    for (const phrase of phrases) {
+      expect(classifyTaskCommand(phrase)).toMatchObject({ type: "propose" });
+    }
+  });
+
   test("setup locks after admin creation and admin can create synced Markdown tasks", async () => {
     const runtime = await makeRuntime();
 
