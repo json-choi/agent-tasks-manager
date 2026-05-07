@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { classifyTaskCommand } from "../agent-plugin/shared/task-manager-client";
+import { taskMemberColumns, taskStatusGroupSections } from "../src/client/lib/tasks";
 import { createRuntime } from "../src/server/app";
 import type { Runtime } from "../src/server/context";
 import { bootstrapFromEnv } from "../src/server/services/bootstrap.service";
@@ -156,6 +157,21 @@ describe("task-manager core", () => {
     expect(createdBody.task.githubRef).toBe("acme/web#12");
     expect(existsSync(createdBody.task.markdownPath)).toBe(true);
 
+    const boardDefault = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: setupCookie,
+      body: {
+        title: "Review launch notes",
+        assignee: "PM"
+      }
+    });
+    expect(boardDefault.status).toBe(201);
+    const boardDefaultBody = await boardDefault.json();
+    expect(boardDefaultBody.task.status).toBe("confirmed");
+    expect(boardDefaultBody.task.priority).toBe("P2");
+    expect(boardDefaultBody.task.category).toBe("general");
+    expect(boardDefaultBody.task.assignee).toBe("PM");
+
     const invalidOwner = await request(runtime, "/api/tasks", {
       method: "POST",
       cookie: setupCookie,
@@ -199,6 +215,192 @@ describe("task-manager core", () => {
     const migrated = await createRuntime({ dataDir, publicBaseUrl: "http://localhost:3011" });
     runtimes.push(migrated);
     expect(migrated.store.getUserProfile(createdBody.user.id)).toMatchObject({ role: "owner" });
+  });
+
+  test("owner task patch persists Kanban drop assignee and status updates", async () => {
+    const runtime = await makeRuntime();
+    const adminCookie = await createAdmin(runtime);
+
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Alice",
+        slackUserId: "U_ALICE",
+        aliases: ["alice"]
+      }
+    });
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Bob",
+        slackUserId: "U_BOB",
+        aliases: ["bob"]
+      }
+    });
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Move from board",
+        assignee: "Alice",
+        status: "confirmed"
+      }
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json();
+
+    const moved = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: {
+        assignee: "Bob",
+        status: "in_progress"
+      }
+    });
+    expect(moved.status).toBe(200);
+    const movedBody = await moved.json();
+    expect(movedBody.task.assignee).toBe("Bob");
+    expect(movedBody.task.status).toBe("in_progress");
+    expect(runtime.store.getTask(createdBody.task.id)).toMatchObject({
+      assignee: "Bob",
+      status: "in_progress"
+    });
+    const movedMarkdown = readFileSync(movedBody.task.markdownPath, "utf8");
+    expect(movedMarkdown).toContain('assignee: "Bob"');
+    expect(movedMarkdown).toContain('status: "in_progress"');
+
+    const unassigned = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: {
+        assignee: null,
+        status: "done"
+      }
+    });
+    expect(unassigned.status).toBe(200);
+    const unassignedBody = await unassigned.json();
+    expect(unassignedBody.task.assignee).toBeNull();
+    expect(unassignedBody.task.status).toBe("done");
+
+    const invalidStatus = await request(runtime, `/api/tasks/${createdBody.task.id}`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: {
+        assignee: "Alice",
+        status: "blocked-review"
+      }
+    });
+    expect(invalidStatus.status).toBe(400);
+    expect(runtime.store.getTask(createdBody.task.id)).toMatchObject({
+      assignee: null,
+      status: "done"
+    });
+  });
+
+  test("task creation validation rejects incomplete titles and invalid Slack owners", async () => {
+    const runtime = await makeRuntime();
+    const adminCookie = await createAdmin(runtime);
+
+    for (const body of [
+      {},
+      { title: "" },
+      { title: "   ", description: "Whitespace-only titles stay invalid." }
+    ]) {
+      const invalidTitle = await request(runtime, "/api/tasks", {
+        method: "POST",
+        cookie: adminCookie,
+        body
+      });
+
+      expect(invalidTitle.status).toBe(400);
+      expect(await invalidTitle.json()).toEqual({ error: "Task title is required" });
+    }
+
+    const invalidAssignee = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Assign to missing Slack owner",
+        assignee: "not-a-slack-user"
+      }
+    });
+    expect(invalidAssignee.status).toBe(400);
+    expect(await invalidAssignee.json()).toEqual({
+      error: "Assignee must be selected from active Slack users in Settings."
+    });
+
+    const invalidReporter = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Report from missing Slack owner",
+        reporter: "not-a-slack-user"
+      }
+    });
+    expect(invalidReporter.status).toBe(400);
+    expect(await invalidReporter.json()).toEqual({
+      error: "Reporter must be selected from active Slack users in Settings."
+    });
+
+    expect(runtime.store.listTasks()).toEqual([]);
+  });
+
+  test("created board tasks persist and reload in the same member status column", async () => {
+    const runtime = await makeRuntime();
+    const adminCookie = await createAdmin(runtime);
+
+    await request(runtime, "/api/settings/owners", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        ownerName: "Bob",
+        slackUserId: "U_BOB",
+        aliases: ["bob"]
+      }
+    });
+
+    const created = await request(runtime, "/api/tasks", {
+      method: "POST",
+      cookie: adminCookie,
+      body: {
+        title: "Persist created board task",
+        assignee: "Bob",
+        status: "in_progress",
+        priority: "P1"
+      }
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json();
+    expect(createdBody.task).toMatchObject({
+      assignee: "Bob",
+      status: "in_progress",
+      priority: "P1"
+    });
+
+    const dataDir = runtime.config.dataDir;
+    runtime.store.close();
+    const runtimeIndex = runtimes.indexOf(runtime);
+    if (runtimeIndex >= 0) runtimes.splice(runtimeIndex, 1);
+
+    const reloaded = await createRuntime({ dataDir, publicBaseUrl: "http://localhost:3011" });
+    runtimes.push(reloaded);
+
+    const reloadedTasks = reloaded.store.listTasks();
+    const columns = taskMemberColumns(reloadedTasks, reloaded.store.listOwners());
+    const bobColumn = columns.find((column) => column.label === "Bob");
+    const inProgressSection = taskStatusGroupSections(bobColumn?.tasks ?? [])
+      .find((section) => section.id === "in-progress");
+
+    expect(reloadedTasks.find((task) => task.id === createdBody.task.id)).toMatchObject({
+      assignee: "Bob",
+      status: "in_progress",
+      priority: "P1"
+    });
+    expect(bobColumn?.tasks.map((task) => task.id)).toEqual([createdBody.task.id]);
+    expect(inProgressSection?.tasks.map((task) => task.id)).toEqual([createdBody.task.id]);
   });
 
   test("agent token flow proposes once per Slack thread and processes assignment/status", async () => {

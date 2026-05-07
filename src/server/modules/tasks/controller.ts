@@ -122,6 +122,7 @@ export function tasksController({ store, requireAdmin, requireUser }: ServerCont
       const reporter = "reporter" in input ? slackOwnerName(store, input.reporter, "Reporter") : undefined;
       if (reporter instanceof Response) return reporter;
 
+      if ("status" in input && !status) return jsonResponse({ error: "A valid status is required" }, 400);
       if (title) update.title = title;
       if (description !== null) update.description = description;
       if (status) update.status = status;
