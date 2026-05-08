@@ -1,0 +1,50 @@
+{
+  "name": "guest-tts-example-message",
+  "input": {
+    "workspaceId": "TGUEST",
+    "channelId": "CGUEST",
+    "channelName": "guest-experience",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000300.000400",
+        "threadTs": "1710000300.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> add the guest TTS example-message fixture before demo?",
+        "permalink": "https://example.slack.com/archives/CGUEST/p1710000300000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TGUEST",
+    "channelId": "CGUEST",
+    "channelName": "guest-experience",
+    "ts": "1710000300.000400",
+    "threadTs": "1710000300.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> add the guest TTS example-message fixture before demo?",
+    "taskTitle": "Add the guest TTS example-message fixture before demo?",
+    "dueAt": "demo",
+    "nextAction": "Add the guest TTS example-message fixture before demo?",
+    "permalink": "https://example.slack.com/archives/CGUEST/p1710000300000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CGUEST/p1710000300000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}

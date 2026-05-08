@@ -1,4 +1,5 @@
 import type { AgentSettings } from "../shared/types";
+import { buildOpenClawTaskManagerConfig } from "./openclaw-config.service";
 
 export function buildAgentQuickStart(agent: AgentSettings, apiBaseUrl: string, token: string | null) {
   const displayToken = token ?? "<existing token>";
@@ -20,7 +21,7 @@ export function buildAgentQuickStart(agent: AgentSettings, apiBaseUrl: string, t
       `mkdir -p ${sharedTarget}`,
       `cp -R ${sharedSource}/* ${sharedTarget}/`,
       `printf '%s\n' '${`TASK_MANAGER_API_URL=${apiBaseUrl}`}' '${`TASK_MANAGER_AGENT_ID=${agent.id}`}' '${`TASK_MANAGER_API_TOKEN=${displayToken}`}' > ${pluginTarget}/task-manager.env`,
-      `cat > ${pluginTarget}/openclaw-task-manager.json <<'JSON'\n${JSON.stringify(openClawQuickStartManifest(apiBaseUrl), null, 2)}\nJSON`,
+      `cat > ${pluginTarget}/openclaw-task-manager.json <<'JSON'\n${JSON.stringify(buildOpenClawTaskManagerConfig(apiBaseUrl), null, 2)}\nJSON`,
       reload
     ],
     smokeTest: [
@@ -37,23 +38,9 @@ export function buildAgentQuickStart(agent: AgentSettings, apiBaseUrl: string, t
       "OpenClaw can send assignment DMs.",
       "OpenClaw forwards Slack block action interactions to Task Manager.",
       "OpenClaw polls Task Manager outbox on a schedule.",
+      "OpenClaw runs Task Manager Slack collection on the configured schedule.",
       "OpenClaw ignores bot-origin messages.",
       "OpenClaw command or mention gating is enabled for manual channels."
     ]
-  };
-}
-
-function openClawQuickStartManifest(apiBaseUrl: string) {
-  return {
-    name: "task-manager",
-    runtime: "openclaw",
-    apiBaseUrl,
-    skill: "./task-manager-skill.ts",
-    env: "./task-manager.env",
-    handlers: {
-      slackMessage: "handleMessage",
-      slackInteraction: "handleInteraction",
-      scheduledOutbox: "pollOutbox"
-    }
   };
 }

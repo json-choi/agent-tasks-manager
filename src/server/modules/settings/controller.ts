@@ -4,7 +4,8 @@ import type { ServerContext } from "../../context";
 import type { UpsertAgentInput } from "../../repositories/task-store.repository";
 import { buildAgentQuickStart } from "../../services/agent-onboarding.service";
 import { enqueueMemberInvitations } from "../../services/member-invitation.service";
-import { asStringMap, parseAgentType, parseChannelMode, parseGitHubRule } from "../../shared/parsers";
+import { asStringMap, parseAgentType, parseChannelMode, parseGitHubRule, parseSlackCollectionScopeSettings, validateSlackCollectionScopeSettingsInput } from "../../shared/parsers";
+import { slackCollectionScopeSchema } from "../../shared/types";
 import { asRecord, booleanValue, jsonResponse, stringValue } from "../../shared/utils";
 
 export function settingsController({ config, store, requireAdmin }: ServerContext) {
@@ -140,6 +141,30 @@ export function settingsController({ config, store, requireAdmin }: ServerContex
       if (assigneesByOwner) githubPatch.assigneesByOwner = assigneesByOwner;
       return {
         github: store.updateGitHubSettings(githubPatch)
+      };
+    })
+    .get("/api/settings/slack/collection-scope", async ({ request }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+      return {
+        collectionScope: store.getSlackCollectionScopeSettings(),
+        collectionScopeSchema: slackCollectionScopeSchema
+      };
+    })
+    .get("/api/settings/slack/workspaces", async ({ request }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+      return { workspaces: store.listSlackWorkspaceConnections() };
+    })
+    .patch("/api/settings/slack/collection-scope", async ({ request, body }) => {
+      const auth = await requireAdmin(request);
+      if ("response" in auth) return auth.response;
+
+      const input = asRecord(body);
+      return {
+        collectionScope: store.updateSlackCollectionScopeSettings(parseSlackCollectionScopeSettings(input)),
+        collectionScopeSchema: slackCollectionScopeSchema,
+        validation: validateSlackCollectionScopeSettingsInput(input)
       };
     })
     .get("/api/settings/channels", async ({ request }) => {

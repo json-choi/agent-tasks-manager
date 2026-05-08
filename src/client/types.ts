@@ -78,6 +78,54 @@ export type ChannelPolicy = {
   updatedAt: string;
 };
 
+export type SlackCollectionScopeSettings = {
+  workspace: string | null;
+  workspaces: string[];
+  channels: string[];
+  channelThreadScopes: Record<string, "parent_messages" | "active_threads" | "full_thread_history">;
+  threads: string[];
+  mentions: string[];
+  keywords: string[];
+  updatedAt: string | null;
+};
+
+export type SlackCollectionScopeValidation = {
+  invalid: Record<string, string[]>;
+  duplicates: Record<string, string[]>;
+  saved: Record<string, string[]>;
+  hasInvalid: boolean;
+  hasDuplicates: boolean;
+};
+
+export type SlackCollectionScopeSchema = {
+  version: "slack_collection_scope.v1";
+  supportedTriggers: readonly ["manual", "scheduled"];
+  defaults: SlackCollectionScopeSettings;
+  fields: Record<string, Record<string, unknown>>;
+  scheduledTarget: {
+    expansion: string;
+    emptyWorkspaces: string;
+    defaultThreadCollectionMode: SlackCollectionScopeSettings["channelThreadScopes"][string];
+    cursorKey: string;
+  };
+};
+
+export type SlackWorkspaceConnection = {
+  workspaceId: string;
+  workspaceName?: string | null;
+  agentId?: string | null;
+  agentName?: string | null;
+  channels: SlackWorkspaceChannel[];
+  status: "connected" | "configured";
+  lastSeenAt?: string | null;
+};
+
+export type SlackWorkspaceChannel = {
+  channelId: string;
+  channelName?: string | null;
+  lastSeenAt?: string | null;
+};
+
 export type GitHubRule = {
   repo: string;
   projectLabel?: string;

@@ -1,0 +1,50 @@
+{
+  "name": "tts-setup-sharing-example-message",
+  "input": {
+    "workspaceId": "TTTSSETUP",
+    "channelId": "CTTSSETUP",
+    "channelName": "tts-setup",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000350.000400",
+        "threadTs": "1710000350.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> document and share the TTS setup steps before demo?",
+        "permalink": "https://example.slack.com/archives/CTTSSETUP/p1710000350000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TTTSSETUP",
+    "channelId": "CTTSSETUP",
+    "channelName": "tts-setup",
+    "ts": "1710000350.000400",
+    "threadTs": "1710000350.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> document and share the TTS setup steps before demo?",
+    "taskTitle": "Document and share the TTS setup steps before demo?",
+    "dueAt": "demo",
+    "nextAction": "Document and share the TTS setup steps before demo?",
+    "permalink": "https://example.slack.com/archives/CTTSSETUP/p1710000350000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CTTSSETUP/p1710000350000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}

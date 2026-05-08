@@ -236,6 +236,12 @@ SQLite indexing and Markdown task file sync live in:
 src/server/repositories/task-store.repository.ts
 ```
 
+The generated task Markdown and YAML frontmatter contract is documented in:
+
+```text
+docs/task-markdown-contract.md
+```
+
 ### Auth
 
 Admin auth is wrapped in:

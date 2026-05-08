@@ -15,10 +15,23 @@ import type {
   OwnerMapping,
   OutboxItem,
   PublicAccessSettings,
+  SlackCollectedMessage,
+  SlackCollectedMessageWithRun,
+  SlackCollectionRun,
+  SlackCollectionRunStatus,
+  SlackCollectionTrigger,
   SetupReviewSettings,
   SlackCursor,
+  SlackCollectionScopeSettings,
   SlackDigest,
   SlackDigestCandidate,
+  SlackConfirmationAction,
+  SlackTaskCandidateRecord,
+  SlackTaskCandidateConfirmationRequest,
+  SlackTaskCandidateMetadata,
+  SlackThreadCollectionMode,
+  SlackWorkspaceConnection,
+  SlackWorkspaceChannel,
   Task,
   TaskCategory,
   TaskPriority,
@@ -26,8 +39,26 @@ import type {
   UserProfile,
   UserRole
 } from "../shared/types";
-import { channelModes, taskCategories, taskPriorities, taskStates, userRoles } from "../shared/types";
-import { compactText, hashSecret, newId, newSecret, nowIso, safeJsonParse, tokenPreview } from "../shared/utils";
+import {
+  channelModes,
+  slackConfirmationActions,
+  slackConfirmationResponseStates,
+  slackCollectionRunStatuses,
+  slackCollectionTriggers,
+  slackThreadCollectionModes,
+  taskCategories,
+  taskPriorities,
+  taskStates,
+  userRoles
+} from "../shared/types";
+import { normalizeSlackCollectionScopeSettings } from "../shared/parsers";
+import { classifySlackTaskificationMessage, type SlackTaskificationClassification } from "../../shared/slack-qualification";
+import {
+  deriveSlackTaskCandidateContent,
+  detectSlackMemberMappingUncertainties,
+  validateSlackTaskCandidateMetadata
+} from "../services/slack-task.service";
+import { compactText, hashSecret, newId, newSecret, nowIso, safeJsonParse, stringValue, tokenPreview } from "../shared/utils";
 
 interface AgentRow {
   id: string;
@@ -126,6 +157,55 @@ interface SlackDigestRow {
   committed_at: string | null;
 }
 
+interface SlackCollectedMessageRow {
+  id: string;
+  agent_id: string;
+  collection_run_id: string | null;
+  workspace_id: string | null;
+  channel_id: string;
+  channel_name: string | null;
+  thread_ts: string | null;
+  message_ts: string;
+  user_id: string | null;
+  user_name: string | null;
+  text: string;
+  permalink: string | null;
+  bot_id: string | null;
+  digest_id: string | null;
+  collection_scope_source: "saved" | "manual_override";
+  thread_collection_mode: SlackThreadCollectionMode;
+  collection_scope: string;
+  dedupe_key: string;
+  processed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SlackCollectionRunRow {
+  id: string;
+  agent_id: string;
+  digest_id: string | null;
+  workspace_id: string | null;
+  channel_id: string;
+  channel_name: string | null;
+  collection_trigger: string;
+  collection_scope_source: "saved" | "manual_override";
+  thread_collection_mode: SlackThreadCollectionMode;
+  collection_scope: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  received_message_count: number;
+  parsed_message_count: number;
+  retained_message_count: number;
+  inserted_message_count: number;
+  duplicate_message_count: number;
+  candidate_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface GitHubSettingsRow {
   id: string;
   payload: string;
@@ -166,6 +246,47 @@ interface AssignmentRequestRow {
   created_at: string;
   updated_at: string;
   responded_at: string | null;
+}
+
+interface SlackTaskCandidateConfirmationRequestRow {
+  id: string;
+  agent_id: string;
+  task_id: string;
+  outbox_id: string | null;
+  workspace_id: string;
+  channel_id: string;
+  thread_ts: string | null;
+  message_ts: string;
+  assignee_key: string;
+  confirmation_target: string;
+  confirmation_state: string;
+  confirmation_action: string | null;
+  selected_assignee: string | null;
+  selected_classification: string | null;
+  response_text: string | null;
+  responded_at: string | null;
+  dedupe_key: string;
+  payload: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SlackTaskCandidateRow {
+  id: string;
+  agent_id: string;
+  task_id: string;
+  workspace_id: string;
+  channel_id: string;
+  thread_ts: string | null;
+  message_ts: string;
+  source_ts: string | null;
+  assignee_key: string;
+  confirmation_target: string | null;
+  confirmation_state: string;
+  dedupe_key: string;
+  payload: string;
+  created_at: string;
+  updated_at: string;
 }
 
 interface RuntimeSettingRow {
@@ -211,6 +332,13 @@ export interface UpdateTaskInput {
   result?: string | null;
   githubRef?: string | null;
   dueAt?: string | null;
+  channelId?: string | null;
+  threadTs?: string | null;
+  sourceAgentId?: string | null;
+  sourceAgentName?: string | null;
+  sourceAuthor?: string | null;
+  sourceUrl?: string | null;
+  dedupeKey?: string | null;
 }
 
 export interface UpsertOwnerInput {
@@ -239,7 +367,32 @@ export interface CreateAssignmentRequestInput {
   expiresAt?: string | null;
 }
 
+export interface UpsertSlackTaskCandidateConfirmationRequestInput {
+  agentId: string;
+  taskId: string;
+  outboxId?: string | null;
+  candidate: SlackTaskCandidateMetadata;
+  decision?: {
+    confirmationAction?: SlackConfirmationAction | null;
+    selectedAssignee?: string | null;
+    selectedClassification?: TaskCategory | null;
+    responseText?: string | null;
+    respondedAt?: string | null;
+  };
+}
+
+export interface UpsertSlackTaskCandidateInput {
+  agentId: string;
+  taskId: string;
+  candidate: SlackTaskCandidateMetadata | PendingSlackTaskCandidateMetadata;
+}
+
+type PendingSlackTaskCandidateMetadata = Omit<SlackTaskCandidateMetadata, "confirmationState"> & {
+  confirmationState?: SlackTaskCandidateMetadata["confirmationState"] | null;
+};
+
 export interface SlackDigestMessageInput {
+  workspaceId?: string | null;
   channelId?: string | null;
   channelName?: string | null;
   ts: string;
@@ -253,17 +406,34 @@ export interface SlackDigestMessageInput {
 }
 
 export interface CreateSlackDigestInput {
+  workspaceId?: string | null;
   channelId: string;
   channelName?: string | null;
   messages: SlackDigestMessageInput[];
   nextLastTs?: string | null;
   includeThreads?: boolean;
+  threadCollectionMode?: SlackThreadCollectionMode;
+  collectionScope?: SlackCollectionScopeSettings;
+  collectionScopeSource?: "saved" | "manual_override";
+  collectionTrigger?: SlackCollectionTrigger;
+  receivedMessageCount?: number;
+  parsedMessageCount?: number;
 }
 
 export interface CommitSlackDigestInput {
   digestId: string;
   selectedCandidateIds?: string[];
   createTasks?: boolean;
+}
+
+export interface SlackWorkspaceConnectionInput {
+  workspaceId?: string | null;
+  teamId?: string | null;
+  workspaceName?: string | null;
+  teamName?: string | null;
+  channelId?: string | null;
+  channelName?: string | null;
+  channels?: unknown;
 }
 
 export interface UpsertAgentInput {
@@ -643,6 +813,32 @@ export class TaskStore {
     return row ? taskFromRow(row) : null;
   }
 
+  findTaskBySlackSource(input: {
+    channelId?: string | null;
+    threadTs?: string | null;
+    sourceUrl?: string | null;
+    assignee?: string | null;
+  }): Task | null {
+    const assigneeClause = input.assignee ? "assignee = ?" : "assignee IS NULL";
+    const assigneeParams = input.assignee ? [input.assignee] : [];
+
+    if (input.sourceUrl) {
+      const row = this.db
+        .query(`SELECT * FROM tasks WHERE source_url = ? AND ${assigneeClause} ORDER BY updated_at DESC LIMIT 1`)
+        .get(input.sourceUrl, ...assigneeParams) as TaskRow | null;
+      if (row) return taskFromRow(row);
+    }
+
+    if (input.channelId && input.threadTs) {
+      const row = this.db
+        .query(`SELECT * FROM tasks WHERE channel_id = ? AND thread_ts = ? AND ${assigneeClause} ORDER BY updated_at DESC LIMIT 1`)
+        .get(input.channelId, input.threadTs, ...assigneeParams) as TaskRow | null;
+      if (row) return taskFromRow(row);
+    }
+
+    return null;
+  }
+
   updateTask(id: string, input: UpdateTaskInput): Task | null {
     const existing = this.getTask(id);
     if (!existing) return null;
@@ -660,6 +856,13 @@ export class TaskStore {
     const result = input.result === undefined ? existing.result : input.result;
     const githubRef = input.githubRef === undefined ? existing.githubRef : input.githubRef;
     const dueAt = input.dueAt === undefined ? existing.dueAt : input.dueAt;
+    const channelId = input.channelId === undefined ? existing.channelId : input.channelId;
+    const threadTs = input.threadTs === undefined ? existing.threadTs : input.threadTs;
+    const sourceAgentId = input.sourceAgentId === undefined ? existing.sourceAgentId : input.sourceAgentId;
+    const sourceAgentName = input.sourceAgentName === undefined ? existing.sourceAgentName : input.sourceAgentName;
+    const sourceAuthor = input.sourceAuthor === undefined ? existing.sourceAuthor : input.sourceAuthor;
+    const sourceUrl = input.sourceUrl === undefined ? existing.sourceUrl : input.sourceUrl;
+    const dedupeKey = input.dedupeKey === undefined ? existing.dedupeKey : input.dedupeKey;
     const now = nowIso();
     const confirmedAt =
       existing.confirmedAt ?? (status === "confirmed" || status === "in_progress" ? now : null);
@@ -669,7 +872,8 @@ export class TaskStore {
         `UPDATE tasks
          SET title = ?, description = ?, status = ?, priority = ?, assignee = ?, reporter = ?,
              category = ?, notify = ?, initiative = ?, next_action = ?, result = ?, github_ref = ?, due_at = ?,
-             updated_at = ?, confirmed_at = ?
+             channel_id = ?, thread_ts = ?, source_agent_id = ?, source_agent_name = ?, source_author = ?,
+             source_url = ?, dedupe_key = ?, updated_at = ?, confirmed_at = ?
          WHERE id = ?`
       )
       .run(
@@ -686,6 +890,13 @@ export class TaskStore {
         result,
         githubRef,
         dueAt,
+        channelId,
+        threadTs,
+        sourceAgentId,
+        sourceAgentName,
+        sourceAuthor,
+        sourceUrl,
+        dedupeKey,
         now,
         confirmedAt,
         id
@@ -732,6 +943,344 @@ export class TaskStore {
       )
       .all(agentId, limit) as OutboxRow[];
     return rows.map(outboxFromRow);
+  }
+
+  hasOutboxPayloadDedupeKey(agentId: string, dedupeKey: string): boolean {
+    const rows = this.db
+      .query("SELECT payload FROM outbox WHERE agent_id = ?")
+      .all(agentId) as Array<{ payload: string }>;
+    return rows.some((row) => {
+      const payload = safeJsonParse<Record<string, unknown>>(row.payload, {});
+      return stringValue(payload.dedupeKey) === dedupeKey;
+    });
+  }
+
+  hasSlackTaskCandidateConfirmationDedupeKey(agentId: string, dedupeKey: string): boolean {
+    const row = this.db
+      .query("SELECT id FROM slack_task_candidate_confirmations WHERE agent_id = ? AND dedupe_key = ?")
+      .get(agentId, dedupeKey) as { id: string } | null;
+    return Boolean(row);
+  }
+
+  upsertSlackTaskCandidate(input: UpsertSlackTaskCandidateInput): SlackTaskCandidateRecord {
+    const candidate = normalizePendingSlackTaskCandidate(input.candidate);
+    const candidateValidation = validateSlackTaskCandidateMetadata(candidate, { requireConfirmationBackedFields: true });
+    if (!candidateValidation.ok) {
+      throw new Error(
+        `Slack task candidate metadata is missing or invalid: ${[
+          ...candidateValidation.missing,
+          ...candidateValidation.invalid
+        ].join(", ")}`
+      );
+    }
+    const now = nowIso();
+    const assigneeKey =
+      assigneeKeyFromSlackTaskCandidateDedupeKey(candidate.dedupeKey) ??
+      candidate.assignee ??
+      candidate.assigneeCandidates[0] ??
+      "unassigned";
+    const sourceTs = slackTaskCandidateSourceTs(candidate);
+    const existing =
+      this.getSlackTaskCandidateByDedupeKey(input.agentId, candidate.dedupeKey) ??
+      this.getSlackTaskCandidateBySourceIdentity(input.agentId, {
+        workspaceId: candidate.workspaceId,
+        channelId: candidate.channelId,
+        sourceTs,
+        assigneeKey
+      });
+
+    if (existing) {
+      this.db
+        .query(
+          `UPDATE slack_task_candidates
+           SET task_id = ?, workspace_id = ?, channel_id = ?, thread_ts = ?, message_ts = ?,
+               source_ts = ?, assignee_key = ?, confirmation_target = ?, confirmation_state = ?,
+               dedupe_key = ?, payload = ?, updated_at = ?
+          WHERE id = ?`
+        )
+        .run(
+          input.taskId,
+          candidate.workspaceId,
+          candidate.channelId,
+          candidate.threadTs,
+          candidate.messageTs,
+          sourceTs,
+          assigneeKey,
+          candidate.confirmationTarget || null,
+          candidate.confirmationState,
+          candidate.dedupeKey,
+          JSON.stringify(candidate),
+          now,
+          existing.id
+        );
+      const updated = this.getSlackTaskCandidate(existing.id);
+      if (!updated) throw new Error("Slack task candidate update failed");
+      return updated;
+    }
+
+    const id = newId("cand");
+    this.db
+      .query(
+        `INSERT INTO slack_task_candidates
+         (id, agent_id, task_id, workspace_id, channel_id, thread_ts, message_ts, source_ts, assignee_key,
+          confirmation_target, confirmation_state, dedupe_key, payload, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.agentId,
+        input.taskId,
+        candidate.workspaceId,
+        candidate.channelId,
+        candidate.threadTs,
+        candidate.messageTs,
+        sourceTs,
+        assigneeKey,
+        candidate.confirmationTarget || null,
+        candidate.confirmationState,
+        candidate.dedupeKey,
+        JSON.stringify(candidate),
+        now,
+        now
+      );
+    const persisted = this.getSlackTaskCandidate(id);
+    if (!persisted) throw new Error("Slack task candidate create failed");
+    this.audit("slack.task_candidate.persisted", {
+      id,
+      taskId: input.taskId,
+      dedupeKey: candidate.dedupeKey,
+      workspaceId: candidate.workspaceId,
+      channelId: candidate.channelId,
+      messageTs: candidate.messageTs
+    });
+    return persisted;
+  }
+
+  getSlackTaskCandidate(id: string): SlackTaskCandidateRecord | null {
+    const row = this.db
+      .query("SELECT * FROM slack_task_candidates WHERE id = ?")
+      .get(id) as SlackTaskCandidateRow | null;
+    return row ? slackTaskCandidateFromRow(row) : null;
+  }
+
+  getSlackTaskCandidateByDedupeKey(agentId: string, dedupeKey: string): SlackTaskCandidateRecord | null {
+    const row = this.db
+      .query("SELECT * FROM slack_task_candidates WHERE agent_id = ? AND dedupe_key = ?")
+      .get(agentId, dedupeKey) as SlackTaskCandidateRow | null;
+    return row ? slackTaskCandidateFromRow(row) : null;
+  }
+
+  getSlackTaskCandidateBySourceIdentity(
+    agentId: string,
+    identity: { workspaceId: string; channelId: string; sourceTs: string; assigneeKey: string }
+  ): SlackTaskCandidateRecord | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM slack_task_candidates
+         WHERE agent_id = ? AND workspace_id = ? AND channel_id = ? AND source_ts = ? AND assignee_key = ?`
+      )
+      .get(agentId, identity.workspaceId, identity.channelId, identity.sourceTs, identity.assigneeKey) as SlackTaskCandidateRow | null;
+    return row ? slackTaskCandidateFromRow(row) : null;
+  }
+
+  upsertSlackTaskCandidateConfirmationRequest(
+    input: UpsertSlackTaskCandidateConfirmationRequestInput
+  ): SlackTaskCandidateConfirmationRequest {
+    const candidate = normalizePendingSlackTaskCandidate(input.candidate);
+    const candidateValidation = validateSlackTaskCandidateMetadata(candidate, {
+      requireConfirmationTarget: true,
+      requireConfirmationBackedFields: true
+    });
+    if (!candidateValidation.ok) {
+      throw new Error(
+        `Slack task candidate metadata is missing or invalid: ${[
+          ...candidateValidation.missing,
+          ...candidateValidation.invalid
+        ].join(", ")}`
+      );
+    }
+    const existing = this.getSlackTaskCandidateConfirmationByDedupeKey(input.agentId, candidate.dedupeKey);
+    const now = nowIso();
+    const decisionRespondedAt =
+      input.decision && input.decision.confirmationAction !== null
+        ? input.decision.respondedAt ?? now
+        : input.decision?.respondedAt;
+    const assigneeKey =
+      assigneeKeyFromSlackTaskCandidateDedupeKey(candidate.dedupeKey) ??
+      candidate.assignee ??
+      candidate.assigneeCandidates[0] ??
+      "unassigned";
+
+    if (existing) {
+      this.db
+        .query(
+          `UPDATE slack_task_candidate_confirmations
+           SET task_id = ?, outbox_id = ?, workspace_id = ?, channel_id = ?, thread_ts = ?,
+               message_ts = ?, assignee_key = ?, confirmation_target = ?, confirmation_state = ?,
+               confirmation_action = ?, selected_assignee = ?, selected_classification = ?,
+               response_text = ?, responded_at = ?, payload = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          input.taskId,
+          input.outboxId ?? existing.outboxId,
+          candidate.workspaceId,
+          candidate.channelId,
+          candidate.threadTs,
+          candidate.messageTs,
+          assigneeKey,
+          candidate.confirmationTarget,
+          candidate.confirmationState,
+          input.decision?.confirmationAction === undefined ? existing.confirmationAction : input.decision.confirmationAction,
+          input.decision?.selectedAssignee === undefined ? existing.selectedAssignee : input.decision.selectedAssignee,
+          input.decision?.selectedClassification === undefined
+            ? existing.selectedClassification
+            : input.decision.selectedClassification,
+          input.decision?.responseText === undefined ? existing.responseText : input.decision.responseText,
+          decisionRespondedAt === undefined ? existing.respondedAt : decisionRespondedAt,
+          JSON.stringify(candidate),
+          now,
+          existing.id
+        );
+      const updated = this.getSlackTaskCandidateConfirmation(existing.id);
+      if (!updated) throw new Error("Slack task candidate confirmation update failed");
+      return updated;
+    }
+
+    const id = newId("cfm");
+    this.db
+      .query(
+        `INSERT INTO slack_task_candidate_confirmations
+         (id, agent_id, task_id, outbox_id, workspace_id, channel_id, thread_ts, message_ts,
+          assignee_key, confirmation_target, confirmation_state, confirmation_action, selected_assignee,
+          selected_classification, response_text, responded_at, dedupe_key, payload, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.agentId,
+        input.taskId,
+        input.outboxId ?? null,
+        candidate.workspaceId,
+        candidate.channelId,
+        candidate.threadTs,
+        candidate.messageTs,
+        assigneeKey,
+        candidate.confirmationTarget,
+        candidate.confirmationState,
+        input.decision?.confirmationAction ?? null,
+        input.decision?.selectedAssignee ?? null,
+        input.decision?.selectedClassification ?? null,
+        input.decision?.responseText ?? null,
+        decisionRespondedAt ?? null,
+        candidate.dedupeKey,
+        JSON.stringify(candidate),
+        now,
+        now
+      );
+    const request = this.getSlackTaskCandidateConfirmation(id);
+    if (!request) throw new Error("Slack task candidate confirmation create failed");
+    this.audit("slack.task_candidate_confirmation.requested", {
+      id,
+      taskId: input.taskId,
+      dedupeKey: candidate.dedupeKey,
+      workspaceId: candidate.workspaceId,
+      channelId: candidate.channelId,
+      messageTs: candidate.messageTs
+    });
+    return request;
+  }
+
+  getSlackTaskCandidateConfirmation(id: string): SlackTaskCandidateConfirmationRequest | null {
+    const row = this.db
+      .query("SELECT * FROM slack_task_candidate_confirmations WHERE id = ?")
+      .get(id) as SlackTaskCandidateConfirmationRequestRow | null;
+    return row ? slackTaskCandidateConfirmationFromRow(row) : null;
+  }
+
+  getSlackTaskCandidateConfirmationByDedupeKey(
+    agentId: string,
+    dedupeKey: string
+  ): SlackTaskCandidateConfirmationRequest | null {
+    const row = this.db
+      .query("SELECT * FROM slack_task_candidate_confirmations WHERE agent_id = ? AND dedupe_key = ?")
+      .get(agentId, dedupeKey) as SlackTaskCandidateConfirmationRequestRow | null;
+    return row ? slackTaskCandidateConfirmationFromRow(row) : null;
+  }
+
+  listSlackTaskCandidateConfirmationsPastNoResponseTimeout(
+    agentId: string,
+    timeoutMinutes: number,
+    now = new Date()
+  ): SlackTaskCandidateConfirmationRequest[] {
+    const threshold = new Date(now.getTime() - timeoutMinutes * 60 * 1000).toISOString();
+    const rows = this.db
+      .query(
+        `SELECT * FROM slack_task_candidate_confirmations
+         WHERE agent_id = ?
+           AND confirmation_action IS NULL
+           AND responded_at IS NULL
+           AND confirmation_state IN ('proposed', 'assigning')
+           AND created_at <= ?
+         ORDER BY created_at ASC`
+      )
+      .all(agentId, threshold) as SlackTaskCandidateConfirmationRequestRow[];
+    return rows.map(slackTaskCandidateConfirmationFromRow);
+  }
+
+  transitionSlackTaskCandidateConfirmationsPastNoResponseTimeoutToReviewNeeded(
+    agentId: string,
+    timeoutMinutes: number,
+    now = new Date()
+  ): SlackTaskCandidateConfirmationRequest[] {
+    const timedOut = this.listSlackTaskCandidateConfirmationsPastNoResponseTimeout(agentId, timeoutMinutes, now);
+    const transitionedIds: string[] = [];
+
+    this.db.transaction(() => {
+      for (const confirmation of timedOut) {
+        const task = this.getTask(confirmation.taskId);
+        const candidate = this.getSlackTaskCandidateByDedupeKey(agentId, confirmation.dedupeKey);
+        if (!task || !candidate) continue;
+        if (task.status !== "proposed" && task.status !== "assigning") continue;
+        if (candidate.confirmationState !== "proposed" && candidate.confirmationState !== "assigning") continue;
+
+        const updatedTask = this.updateTask(task.id, { status: "review_needed" });
+        if (!updatedTask) continue;
+
+        const confirmationTarget = stringValue(confirmation.payload.leaderReviewer) ?? confirmation.confirmationTarget;
+        const updatedCandidate: SlackTaskCandidateMetadata = {
+          ...candidate.payload,
+          ...confirmation.payload,
+          taskTitle: updatedTask.title,
+          taskDescription: updatedTask.description,
+          taskClassification: updatedTask.category,
+          assignee: updatedTask.assignee,
+          confirmationState: "review_needed",
+          confirmationTarget,
+          dueAt: updatedTask.dueAt,
+          nextAction: updatedTask.nextAction,
+          sourceUrl: updatedTask.sourceUrl,
+          markdownPath: updatedTask.markdownPath
+        };
+
+        this.upsertSlackTaskCandidate({
+          agentId,
+          taskId: updatedTask.id,
+          candidate: updatedCandidate
+        });
+        const updatedConfirmation = this.upsertSlackTaskCandidateConfirmationRequest({
+          agentId,
+          taskId: updatedTask.id,
+          outboxId: confirmation.outboxId,
+          candidate: updatedCandidate
+        });
+        transitionedIds.push(updatedConfirmation.id);
+      }
+    })();
+
+    return transitionedIds
+      .map((id) => this.getSlackTaskCandidateConfirmation(id))
+      .filter((confirmation): confirmation is SlackTaskCandidateConfirmationRequest => Boolean(confirmation));
   }
 
   ackOutbox(agentId: string, id: string): OutboxItem | null {
@@ -1113,12 +1662,53 @@ export class TaskStore {
   createSlackDigest(agentId: string, input: CreateSlackDigestInput): SlackDigest {
     const id = newId("digest");
     const now = nowIso();
-    const candidates = buildSlackDigestCandidates(input);
+    const collectionRunId = newId("slkrun");
+    const persisted = this.persistSlackCollectedMessages(agentId, id, collectionRunId, input);
+    const reusedMessages = this.slackCollectedMessagesWithExistingCandidates(agentId, input, persisted.duplicates);
+    const uniqueInput = { ...input, messages: [...persisted.messages, ...reusedMessages] };
+    const classifications = buildSlackDigestMessageClassifications(uniqueInput);
+    const candidates = buildSlackDigestCandidates(uniqueInput, classifications).map((candidate) => {
+      const assigneeOwner = resolveSlackDigestCandidateAssignee(this, candidate);
+      const memberMappingUncertainties = detectSlackMemberMappingUncertainties(
+        {
+          authorId: candidate.userId,
+          authorName: candidate.userName,
+          assigneeCandidates: candidate.assigneeCandidates
+        },
+        (value) => this.resolveOwner(value)
+      );
+      return {
+        ...candidate,
+        assignee: assigneeOwner?.ownerName ?? candidate.assignee,
+        assigneeResolution: assigneeOwner
+          ? "assigned"
+          : candidate.assigneeSlackUserId
+            ? "unassigned"
+            : candidate.assigneeResolution,
+        requiresAssigneeConfirmation: !assigneeOwner,
+        memberMappingUncertainties
+      };
+    });
+    const collectionTrigger =
+      input.collectionTrigger ?? (input.collectionScopeSource === "manual_override" ? "manual" : "scheduled");
+    const collectionScopeSource = input.collectionScopeSource ?? "saved";
+    const threadCollectionMode =
+      input.threadCollectionMode ?? (input.includeThreads === false ? "parent_messages" : "active_threads");
+    const collectionScope = input.collectionScope ?? this.getSlackCollectionScopeSettings();
     const payload = {
+      workspaceId: input.workspaceId ?? null,
       channelName: input.channelName ?? null,
-      messages: input.messages.map((message) => ({ ...message })),
+      messages: uniqueInput.messages.map((message) => ({ ...message })),
+      classifications,
       candidates,
-      nextLastTs: input.nextLastTs ?? latestSlackTs(input.messages)
+      nextLastTs: input.nextLastTs ?? latestSlackTs(input.messages),
+      threadCollectionMode,
+      collectionRunId,
+      collectionPersistence: {
+        insertedMessages: persisted.insertedCount,
+        duplicateMessages: persisted.duplicateCount,
+        dedupeKeys: persisted.records.map((record) => record.dedupeKey)
+      }
     };
 
     this.db
@@ -1128,15 +1718,282 @@ export class TaskStore {
          VALUES (?, ?, ?, 'pending', ?, ?, NULL)`
       )
       .run(id, agentId, input.channelId, JSON.stringify(payload), now);
+    this.db
+      .query(
+        `INSERT INTO slack_collection_runs
+         (id, agent_id, digest_id, workspace_id, channel_id, channel_name, collection_trigger,
+          collection_scope_source, thread_collection_mode, collection_scope, status, started_at,
+          completed_at, received_message_count, parsed_message_count, retained_message_count,
+          inserted_message_count, duplicate_message_count, candidate_count, error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+      )
+      .run(
+        collectionRunId,
+        agentId,
+        id,
+        input.workspaceId ?? null,
+        input.channelId,
+        input.channelName ?? null,
+        collectionTrigger,
+        collectionScopeSource,
+        threadCollectionMode,
+        JSON.stringify(collectionScope),
+        now,
+        now,
+        nonNegativeInteger(input.receivedMessageCount, input.messages.length),
+        nonNegativeInteger(input.parsedMessageCount, input.messages.length),
+        input.messages.length,
+        persisted.insertedCount,
+        persisted.duplicateCount,
+        candidates.length,
+        now,
+        now
+      );
     this.recordEvent(agentId, "slack.digest.collected", {
       digestId: id,
+      collectionRunId,
       channelId: input.channelId,
       messageCount: input.messages.length,
+      persistedMessageCount: persisted.insertedCount,
+      duplicateMessageCount: persisted.duplicateCount,
       candidateCount: candidates.length
     });
     const digest = this.getSlackDigest(agentId, id);
     if (!digest) throw new Error("Slack digest create failed");
     return digest;
+  }
+
+  listSlackCollectionRuns(filters: { agentId?: string; channelId?: string; digestId?: string } = {}): SlackCollectionRun[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (filters.agentId) {
+      clauses.push("agent_id = ?");
+      params.push(filters.agentId);
+    }
+    if (filters.channelId) {
+      clauses.push("channel_id = ?");
+      params.push(filters.channelId);
+    }
+    if (filters.digestId) {
+      clauses.push("digest_id = ?");
+      params.push(filters.digestId);
+    }
+    const sql = `SELECT * FROM slack_collection_runs ${
+      clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+    } ORDER BY started_at ASC`;
+    const rows = this.db.query(sql).all(...params) as SlackCollectionRunRow[];
+    return rows.map(slackCollectionRunFromRow);
+  }
+
+  listSlackCollectedMessages(filters: { agentId?: string; channelId?: string } = {}): SlackCollectedMessage[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (filters.agentId) {
+      clauses.push("agent_id = ?");
+      params.push(filters.agentId);
+    }
+    if (filters.channelId) {
+      clauses.push("channel_id = ?");
+      params.push(filters.channelId);
+    }
+    const sql = `SELECT * FROM slack_collected_messages ${
+      clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+    } ORDER BY created_at ASC`;
+    const rows = this.db.query(sql).all(...params) as SlackCollectedMessageRow[];
+    return rows.map(slackCollectedMessageFromRow);
+  }
+
+  listUnprocessedSlackCollectedMessages(
+    filters: {
+      agentId?: string;
+      workspaceId?: string;
+      channelId?: string;
+      collectionRunId?: string;
+      digestId?: string;
+      limit?: number;
+    } = {}
+  ): SlackCollectedMessageWithRun[] {
+    const clauses = ["processed_at IS NULL"];
+    const params: string[] = [];
+    if (filters.agentId) {
+      clauses.push("agent_id = ?");
+      params.push(filters.agentId);
+    }
+    if (filters.workspaceId) {
+      clauses.push("workspace_id = ?");
+      params.push(filters.workspaceId);
+    }
+    if (filters.channelId) {
+      clauses.push("channel_id = ?");
+      params.push(filters.channelId);
+    }
+    if (filters.collectionRunId) {
+      clauses.push("collection_run_id = ?");
+      params.push(filters.collectionRunId);
+    }
+    if (filters.digestId) {
+      clauses.push("digest_id = ?");
+      params.push(filters.digestId);
+    }
+    const limit = Math.min(Math.max(nonNegativeInteger(filters.limit, 100), 1), 500);
+    const rows = this.db
+      .query(`SELECT * FROM slack_collected_messages WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC LIMIT ?`)
+      .all(...params, String(limit)) as SlackCollectedMessageRow[];
+    return rows.map((row) => {
+      const message = slackCollectedMessageFromRow(row);
+      return {
+        message,
+        collectionRun: message.collectionRunId ? this.getSlackCollectionRun(message.collectionRunId, message.agentId) : null
+      };
+    });
+  }
+
+  getSlackCollectionRun(id: string, agentId?: string): SlackCollectionRun | null {
+    const row = agentId
+      ? (this.db.query("SELECT * FROM slack_collection_runs WHERE id = ? AND agent_id = ?").get(id, agentId) as
+          | SlackCollectionRunRow
+          | null)
+      : (this.db.query("SELECT * FROM slack_collection_runs WHERE id = ?").get(id) as SlackCollectionRunRow | null);
+    return row ? slackCollectionRunFromRow(row) : null;
+  }
+
+  private persistSlackCollectedMessages(
+    agentId: string,
+    digestId: string,
+    collectionRunId: string,
+    input: CreateSlackDigestInput
+  ): {
+    messages: SlackDigestMessageInput[];
+    duplicates: SlackDigestMessageInput[];
+    records: SlackCollectedMessage[];
+    insertedCount: number;
+    duplicateCount: number;
+  } {
+    const now = nowIso();
+    const collectionScope = input.collectionScope ?? this.getSlackCollectionScopeSettings();
+    const collectionScopeSource = input.collectionScopeSource ?? "saved";
+    const threadCollectionMode =
+      input.threadCollectionMode ?? (input.includeThreads === false ? "parent_messages" : "active_threads");
+    const insertedMessages: SlackDigestMessageInput[] = [];
+    const duplicateMessages: SlackDigestMessageInput[] = [];
+    const records: SlackCollectedMessage[] = [];
+    let duplicateCount = 0;
+
+    for (const message of input.messages) {
+      const normalizedMessage: SlackDigestMessageInput = {
+        ...message,
+        workspaceId: message.workspaceId ?? input.workspaceId ?? null,
+        channelId: message.channelId ?? input.channelId,
+        channelName: message.channelName ?? input.channelName ?? null
+      };
+      const dedupeKey = buildSlackCollectedMessageDedupeKey(input, normalizedMessage);
+      const existing = this.getSlackCollectedMessageByDedupeKey(agentId, dedupeKey);
+      if (existing) {
+        duplicateCount += 1;
+        this.db
+          .query(
+            `UPDATE slack_collected_messages
+             SET digest_id = ?, collection_run_id = ?, channel_name = ?, user_id = ?, user_name = ?, text = ?, permalink = ?,
+                 bot_id = ?, collection_scope_source = ?, thread_collection_mode = ?,
+                 collection_scope = ?, updated_at = ?
+             WHERE id = ?`
+          )
+          .run(
+            digestId,
+            collectionRunId,
+            normalizedMessage.channelName ?? null,
+            normalizedMessage.userId ?? null,
+            normalizedMessage.userName ?? null,
+            normalizedMessage.text,
+            normalizedMessage.permalink ?? null,
+            normalizedMessage.botId ?? null,
+            collectionScopeSource,
+            threadCollectionMode,
+            JSON.stringify(collectionScope),
+            now,
+            existing.id
+          );
+        const updated = this.getSlackCollectedMessageByDedupeKey(agentId, dedupeKey);
+        if (updated) records.push(updated);
+        duplicateMessages.push(normalizedMessage);
+        continue;
+      }
+
+      const id = newId("slkmsg");
+      this.db
+        .query(
+          `INSERT INTO slack_collected_messages
+           (id, agent_id, collection_run_id, workspace_id, channel_id, channel_name, thread_ts, message_ts,
+            user_id, user_name, text, permalink, bot_id, digest_id, collection_scope_source,
+            thread_collection_mode, collection_scope, dedupe_key, processed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+        )
+        .run(
+          id,
+          agentId,
+          collectionRunId,
+          normalizedMessage.workspaceId ?? null,
+          normalizedMessage.channelId ?? input.channelId,
+          normalizedMessage.channelName ?? null,
+          normalizedMessage.threadTs ?? normalizedMessage.parentTs ?? null,
+          normalizedMessage.ts,
+          normalizedMessage.userId ?? null,
+          normalizedMessage.userName ?? null,
+          normalizedMessage.text,
+          normalizedMessage.permalink ?? null,
+          normalizedMessage.botId ?? null,
+          digestId,
+          collectionScopeSource,
+          threadCollectionMode,
+          JSON.stringify(collectionScope),
+          dedupeKey,
+          now,
+          now
+        );
+      insertedMessages.push(normalizedMessage);
+      const record = this.getSlackCollectedMessageByDedupeKey(agentId, dedupeKey);
+      if (record) records.push(record);
+    }
+
+    return { messages: insertedMessages, duplicates: duplicateMessages, records, insertedCount: insertedMessages.length, duplicateCount };
+  }
+
+  private slackCollectedMessagesWithExistingCandidates(
+    agentId: string,
+    input: CreateSlackDigestInput,
+    messages: SlackDigestMessageInput[]
+  ): SlackDigestMessageInput[] {
+    const messageByTs = new Map(messages.map((message) => [message.ts, message]));
+    return buildSlackDigestCandidates({ ...input, messages }).flatMap((candidate) => {
+      if (!this.getSlackTaskCandidateByDedupeKey(agentId, buildSlackDigestTaskDedupeKey(candidate))) return [];
+      const message = messageByTs.get(candidate.ts);
+      return message ? [message] : [];
+    });
+  }
+
+  private getSlackCollectedMessageByDedupeKey(agentId: string, dedupeKey: string): SlackCollectedMessage | null {
+    const row = this.db
+      .query("SELECT * FROM slack_collected_messages WHERE agent_id = ? AND dedupe_key = ?")
+      .get(agentId, dedupeKey) as SlackCollectedMessageRow | null;
+    return row ? slackCollectedMessageFromRow(row) : null;
+  }
+
+  private markSlackCollectedMessageProcessed(
+    agentId: string,
+    input: { digestId: string; channelId: string; threadTs: string | null; messageTs: string }
+  ): void {
+    const now = nowIso();
+    const threadClause = input.threadTs ? "thread_ts = ?" : "thread_ts IS NULL";
+    const params = input.threadTs
+      ? [now, now, agentId, input.digestId, input.channelId, input.threadTs, input.messageTs]
+      : [now, now, agentId, input.digestId, input.channelId, input.messageTs];
+    this.db
+      .query(
+        `UPDATE slack_collected_messages
+         SET processed_at = ?, updated_at = ?
+         WHERE agent_id = ? AND digest_id = ? AND channel_id = ? AND ${threadClause} AND message_ts = ?`
+      )
+      .run(...params);
   }
 
   getSlackDigest(agentId: string, digestId: string): SlackDigest | null {
@@ -1161,11 +2018,13 @@ export class TaskStore {
     if (input.createTasks !== false) {
       for (const candidate of digest.payload.candidates) {
         if (!selected.has(candidate.id)) continue;
+        const assigneeOwner = resolveSlackDigestCandidateAssignee(this, candidate);
         const result = this.createTask({
-          title: compactText(candidate.text, 96),
+          title: candidate.taskTitle,
           description: renderSlackCandidateDescription(candidate),
           status: "proposed",
           priority: inferPriority(candidate.text),
+          assignee: assigneeOwner?.ownerName ?? null,
           reporter: candidate.userName ?? candidate.userId,
           channelId: candidate.channelId,
           threadTs: candidate.threadTs ?? candidate.ts,
@@ -1173,9 +2032,17 @@ export class TaskStore {
           sourceAgentName: agent.name,
           sourceAuthor: candidate.userId ?? candidate.userName,
           sourceUrl: candidate.permalink,
-          dedupeKey: `slack:${candidate.channelId}:${candidate.threadTs ?? candidate.ts}`
+          dueAt: candidate.dueAt,
+          nextAction: candidate.nextAction,
+          dedupeKey: buildSlackDigestTaskDedupeKey(candidate)
         });
         tasks.push(result.task);
+        this.markSlackCollectedMessageProcessed(agent.id, {
+          digestId: digest.id,
+          channelId: candidate.channelId,
+          threadTs: candidate.threadTs,
+          messageTs: candidate.ts
+        });
       }
     }
 
@@ -1190,7 +2057,7 @@ export class TaskStore {
             agent.id,
             digest.channelId,
             digest.payload.nextLastTs ?? latestCandidateTs(digest.payload.candidates) ?? "",
-            true
+            digest.payload.threadCollectionMode !== "parent_messages"
           )
         : null;
     const committed = this.getSlackDigest(agent.id, digest.id);
@@ -1219,6 +2086,131 @@ export class TaskStore {
       assigneesByOwner: payload.assigneesByOwner ?? {},
       updatedAt: row?.updated_at ?? null
     };
+  }
+
+  getSlackCollectionScopeSettings(): SlackCollectionScopeSettings {
+    const row = this.db
+      .query("SELECT key, payload, updated_at FROM runtime_settings WHERE key = 'slack_collection_scope'")
+      .get() as RuntimeSettingRow | null;
+    const payload = row ? safeJsonParse<Partial<SlackCollectionScopeSettings>>(row.payload, {}) : {};
+    return normalizeSlackCollectionScopeSettings(payload, row?.updated_at ?? null);
+  }
+
+  updateSlackCollectionScopeSettings(input: Partial<SlackCollectionScopeSettings>): SlackCollectionScopeSettings {
+    const current = this.getSlackCollectionScopeSettings();
+    const now = nowIso();
+    const merged: Partial<SlackCollectionScopeSettings> = {
+      ...current,
+      ...input,
+      updatedAt: now
+    };
+    if (input.workspaces !== undefined || input.workspace !== undefined) {
+      const workspaceInput: Partial<SlackCollectionScopeSettings> = {};
+      if (input.workspaces !== undefined) workspaceInput.workspaces = input.workspaces;
+      if (input.workspace !== undefined) workspaceInput.workspace = input.workspace;
+      const workspaceScope = normalizeSlackCollectionScopeSettings(workspaceInput);
+      merged.workspaces = workspaceScope.workspaces;
+      merged.workspace = workspaceScope.workspace;
+    }
+    const next = normalizeSlackCollectionScopeSettings(merged, now);
+    this.db
+      .query(
+        `INSERT INTO runtime_settings (key, payload, updated_at)
+         VALUES ('slack_collection_scope', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
+      )
+      .run(JSON.stringify(next), now);
+    this.audit("slack_collection_scope.updated", {
+      workspaces: next.workspaces,
+      workspace: next.workspace,
+      channels: next.channels,
+      channelThreadScopes: next.channelThreadScopes,
+      threads: next.threads,
+      mentions: next.mentions,
+      keywords: next.keywords
+    });
+    this.writeAppConfig();
+    return this.getSlackCollectionScopeSettings();
+  }
+
+  listSlackWorkspaceConnections(): SlackWorkspaceConnection[] {
+    const row = this.db
+      .query("SELECT key, payload, updated_at FROM runtime_settings WHERE key = 'slack_workspace_connections'")
+      .get() as RuntimeSettingRow | null;
+    const saved = row ? safeJsonParse<SlackWorkspaceConnection[]>(row.payload, []) : [];
+    const byWorkspace = new Map<string, SlackWorkspaceConnection>();
+
+    for (const connection of saved) {
+      if (!isSlackWorkspaceId(connection.workspaceId)) continue;
+      byWorkspace.set(connection.workspaceId, {
+        workspaceId: connection.workspaceId,
+        workspaceName: stringOrNull(connection.workspaceName),
+        agentId: stringOrNull(connection.agentId),
+        agentName: stringOrNull(connection.agentName),
+        channels: normalizeSlackWorkspaceChannels(connection.channels),
+        status: connection.status === "connected" ? "connected" : "configured",
+        lastSeenAt: stringOrNull(connection.lastSeenAt)
+      });
+    }
+
+    const scope = this.getSlackCollectionScopeSettings();
+    for (const workspaceId of scope.workspaces) {
+      if (byWorkspace.has(workspaceId)) continue;
+      byWorkspace.set(workspaceId, {
+        workspaceId,
+        workspaceName: null,
+        agentId: null,
+        agentName: null,
+        channels: [],
+        status: "configured",
+        lastSeenAt: null
+      });
+    }
+
+    return Array.from(byWorkspace.values()).sort((a, b) => {
+      const aSeen = a.lastSeenAt ?? "";
+      const bSeen = b.lastSeenAt ?? "";
+      if (aSeen !== bSeen) return bSeen.localeCompare(aSeen);
+      return a.workspaceId.localeCompare(b.workspaceId);
+    });
+  }
+
+  recordSlackWorkspaceConnection(agent: AgentSettings, input: SlackWorkspaceConnectionInput): SlackWorkspaceConnection | null {
+    const workspaceId = stringValue(input.workspaceId) ?? stringValue(input.teamId);
+    if (!workspaceId || !isSlackWorkspaceId(workspaceId)) return null;
+    const now = nowIso();
+    const previous = this.listSlackWorkspaceConnections().find((item) => item.workspaceId === workspaceId);
+    const channels = mergeSlackWorkspaceChannels(
+      previous?.channels ?? [],
+      slackWorkspaceChannelsFromInput(input, now)
+    );
+    const connection: SlackWorkspaceConnection = {
+      workspaceId,
+      workspaceName: stringValue(input.workspaceName) ?? stringValue(input.teamName),
+      agentId: agent.id,
+      agentName: agent.name,
+      channels,
+      status: "connected",
+      lastSeenAt: now
+    };
+    const next = [
+      connection,
+      ...this.listSlackWorkspaceConnections().filter((item) => item.workspaceId !== workspaceId)
+    ];
+    this.db
+      .query(
+        `INSERT INTO runtime_settings (key, payload, updated_at)
+         VALUES ('slack_workspace_connections', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
+      )
+      .run(JSON.stringify(next), now);
+    this.audit("slack_workspace_connection.seen", {
+      workspaceId: connection.workspaceId,
+      workspaceName: connection.workspaceName,
+      agentId: connection.agentId
+    });
+    this.writeAppConfig();
+    return connection;
   }
 
   updateGitHubSettings(input: Partial<GitHubSettings>): GitHubSettings {
@@ -1446,6 +2438,7 @@ public_access:
     const agents = this.listAgents();
     const channels = this.listChannelPolicies();
     const publicAccess = this.getPublicAccessSettings();
+    const slackCollectionScope = this.getSlackCollectionScopeSettings();
     const agentLines = agents.length
       ? agents
           .map(
@@ -1476,6 +2469,15 @@ public_access:
   public_url: ${yamlValue(publicAccess.publicUrl)}
   local_service_url: ${yamlValue(publicAccess.localServiceUrl)}
   access_protected: ${publicAccess.accessProtected}
+slack_collection_scope:
+  workspaces: ${yamlList(slackCollectionScope.workspaces)}
+  workspace: ${yamlValue(slackCollectionScope.workspace)}
+  channels: ${yamlList(slackCollectionScope.channels)}
+  channel_thread_scopes:
+${yamlStringRecord(slackCollectionScope.channelThreadScopes, "    ")}
+  threads: ${yamlList(slackCollectionScope.threads)}
+  mentions: ${yamlList(slackCollectionScope.mentions)}
+  keywords: ${yamlList(slackCollectionScope.keywords)}
 `;
   }
 
@@ -1694,6 +2696,71 @@ public_access:
       )
     `);
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS slack_collected_messages (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        collection_run_id TEXT,
+        workspace_id TEXT,
+        channel_id TEXT NOT NULL,
+        channel_name TEXT,
+        thread_ts TEXT,
+        message_ts TEXT NOT NULL,
+        user_id TEXT,
+        user_name TEXT,
+        text TEXT NOT NULL,
+        permalink TEXT,
+        bot_id TEXT,
+        digest_id TEXT,
+        collection_scope_source TEXT NOT NULL,
+        thread_collection_mode TEXT NOT NULL,
+        collection_scope TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        processed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+      )
+    `);
+    this.ensureColumn("slack_collected_messages", "collection_run_id", "TEXT");
+    this.ensureColumn("slack_collected_messages", "processed_at", "TEXT");
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS slack_collected_messages_agentDedupe_unique
+       ON slack_collected_messages(agent_id, dedupe_key)`
+    );
+    this.db.run(
+      `CREATE INDEX IF NOT EXISTS slack_collected_messages_source_idx
+       ON slack_collected_messages(workspace_id, channel_id, thread_ts, message_ts)`
+    );
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS slack_collection_runs (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        digest_id TEXT,
+        workspace_id TEXT,
+        channel_id TEXT NOT NULL,
+        channel_name TEXT,
+        collection_trigger TEXT NOT NULL,
+        collection_scope_source TEXT NOT NULL,
+        thread_collection_mode TEXT NOT NULL,
+        collection_scope TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        received_message_count INTEGER NOT NULL,
+        parsed_message_count INTEGER NOT NULL,
+        retained_message_count INTEGER NOT NULL,
+        inserted_message_count INTEGER NOT NULL,
+        duplicate_message_count INTEGER NOT NULL,
+        candidate_count INTEGER NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS slack_collection_runs_agentStarted_idx ON slack_collection_runs(agent_id, started_at)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS slack_collection_runs_digest_idx ON slack_collection_runs(digest_id)`);
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS assignment_requests (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -1716,6 +2783,81 @@ public_access:
         FOREIGN KEY (owner_id) REFERENCES owner_mappings(id) ON DELETE SET NULL
       )
     `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS slack_task_candidates (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT,
+        message_ts TEXT NOT NULL,
+        source_ts TEXT NOT NULL,
+        assignee_key TEXT NOT NULL,
+        confirmation_target TEXT,
+        confirmation_state TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      )
+    `);
+    this.ensureColumn("slack_task_candidates", "source_ts", "TEXT");
+    this.db.run("UPDATE slack_task_candidates SET source_ts = COALESCE(thread_ts, message_ts) WHERE source_ts IS NULL OR source_ts = ''");
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS slack_task_candidates_agentDedupe_unique
+       ON slack_task_candidates(agent_id, dedupe_key)`
+    );
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS slack_task_candidates_source_unique
+       ON slack_task_candidates(agent_id, workspace_id, channel_id, source_ts, assignee_key)`
+    );
+    this.db.run(
+      `CREATE INDEX IF NOT EXISTS slack_task_candidates_source_idx
+       ON slack_task_candidates(workspace_id, channel_id, source_ts, assignee_key)`
+    );
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS slack_task_candidate_confirmations (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        outbox_id TEXT,
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT,
+        message_ts TEXT NOT NULL,
+        assignee_key TEXT NOT NULL,
+        confirmation_target TEXT NOT NULL,
+        confirmation_state TEXT NOT NULL,
+        confirmation_action TEXT,
+        selected_assignee TEXT,
+        selected_classification TEXT,
+        response_text TEXT,
+        responded_at TEXT,
+        dedupe_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (outbox_id) REFERENCES outbox(id) ON DELETE SET NULL
+      )
+    `);
+    this.ensureColumn("slack_task_candidate_confirmations", "confirmation_action", "TEXT");
+    this.ensureColumn("slack_task_candidate_confirmations", "selected_assignee", "TEXT");
+    this.ensureColumn("slack_task_candidate_confirmations", "selected_classification", "TEXT");
+    this.ensureColumn("slack_task_candidate_confirmations", "response_text", "TEXT");
+    this.ensureColumn("slack_task_candidate_confirmations", "responded_at", "TEXT");
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS slack_task_candidate_confirmations_agentDedupe_unique
+       ON slack_task_candidate_confirmations(agent_id, dedupe_key)`
+    );
+    this.db.run(
+      `CREATE INDEX IF NOT EXISTS slack_task_candidate_confirmations_source_idx
+       ON slack_task_candidate_confirmations(workspace_id, channel_id, thread_ts, message_ts, assignee_key)`
+    );
     this.db.run(`
       CREATE TABLE IF NOT EXISTS github_settings (
         id TEXT PRIMARY KEY,
@@ -1755,9 +2897,13 @@ public_access:
   }
 
   private ensureTaskColumn(name: string, definition: string): void {
-    const rows = this.db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    this.ensureColumn("tasks", name, definition);
+  }
+
+  private ensureColumn(tableName: string, name: string, definition: string): void {
+    const rows = this.db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
     if (rows.some((row) => row.name === name)) return;
-    this.db.run(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
+    this.db.run(`ALTER TABLE ${tableName} ADD COLUMN ${name} ${definition}`);
   }
 
   private backfillFirstOwnerProfile(): void {
@@ -1894,6 +3040,79 @@ function slackDigestFromRow(row: SlackDigestRow): SlackDigest {
   };
 }
 
+function slackCollectedMessageFromRow(row: SlackCollectedMessageRow): SlackCollectedMessage {
+  const threadCollectionMode = slackThreadCollectionModes.includes(row.thread_collection_mode)
+    ? row.thread_collection_mode
+    : "active_threads";
+  const collectionScopeSource = row.collection_scope_source === "manual_override" ? "manual_override" : "saved";
+
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    collectionRunId: row.collection_run_id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    threadTs: row.thread_ts,
+    messageTs: row.message_ts,
+    userId: row.user_id,
+    userName: row.user_name,
+    text: row.text,
+    permalink: row.permalink,
+    botId: row.bot_id,
+    digestId: row.digest_id,
+    collectionScopeSource,
+    threadCollectionMode,
+    collectionScope: normalizeSlackCollectionScopeSettings(
+      safeJsonParse<Partial<SlackCollectionScopeSettings>>(row.collection_scope, {})
+    ),
+    dedupeKey: row.dedupe_key,
+    processedAt: row.processed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function slackCollectionRunFromRow(row: SlackCollectionRunRow): SlackCollectionRun {
+  const collectionTrigger = slackCollectionTriggers.includes(row.collection_trigger as SlackCollectionTrigger)
+    ? (row.collection_trigger as SlackCollectionTrigger)
+    : "scheduled";
+  const status = slackCollectionRunStatuses.includes(row.status as SlackCollectionRunStatus)
+    ? (row.status as SlackCollectionRunStatus)
+    : "completed";
+  const threadCollectionMode = slackThreadCollectionModes.includes(row.thread_collection_mode)
+    ? row.thread_collection_mode
+    : "active_threads";
+  const collectionScopeSource = row.collection_scope_source === "manual_override" ? "manual_override" : "saved";
+
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    digestId: row.digest_id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    collectionTrigger,
+    collectionScopeSource,
+    threadCollectionMode,
+    collectionScope: normalizeSlackCollectionScopeSettings(
+      safeJsonParse<Partial<SlackCollectionScopeSettings>>(row.collection_scope, {})
+    ),
+    status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    receivedMessageCount: row.received_message_count,
+    parsedMessageCount: row.parsed_message_count,
+    retainedMessageCount: row.retained_message_count,
+    insertedMessageCount: row.inserted_message_count,
+    duplicateMessageCount: row.duplicate_message_count,
+    candidateCount: row.candidate_count,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function channelPolicyFromRow(row: ChannelPolicyRow): ChannelPolicy {
   return {
     channelId: row.channel_id,
@@ -1934,6 +3153,185 @@ function assignmentRequestFromRow(row: AssignmentRequestRow): AssignmentRequest 
     updatedAt: row.updated_at,
     respondedAt: row.responded_at
   };
+}
+
+function slackTaskCandidateConfirmationFromRow(
+  row: SlackTaskCandidateConfirmationRequestRow
+): SlackTaskCandidateConfirmationRequest {
+  const confirmationState = slackConfirmationResponseStates.includes(
+    row.confirmation_state as SlackTaskCandidateConfirmationRequest["confirmationState"]
+  )
+    ? (row.confirmation_state as SlackTaskCandidateConfirmationRequest["confirmationState"])
+    : "proposed";
+  const confirmationAction = slackConfirmationActions.includes(row.confirmation_action as SlackConfirmationAction)
+    ? (row.confirmation_action as SlackConfirmationAction)
+    : null;
+  const selectedClassification = taskCategories.includes(row.selected_classification as TaskCategory)
+    ? (row.selected_classification as TaskCategory)
+    : null;
+
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    taskId: row.task_id,
+    outboxId: row.outbox_id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    threadTs: row.thread_ts,
+    messageTs: row.message_ts,
+    assigneeKey: row.assignee_key,
+    confirmationTarget: row.confirmation_target,
+    confirmationState,
+    confirmationAction,
+    selectedAssignee: row.selected_assignee,
+    selectedClassification,
+    responseText: row.response_text,
+    respondedAt: row.responded_at,
+    dedupeKey: row.dedupe_key,
+    payload: safeJsonParse<SlackTaskCandidateMetadata>(row.payload, {
+      candidateId: row.task_id,
+      workspaceId: row.workspace_id,
+      channelId: row.channel_id,
+      threadTs: row.thread_ts,
+      messageTs: row.message_ts,
+      messageText: "",
+      taskTitle: "",
+      taskDescription: "",
+      sourceChannel: {
+        workspaceId: row.workspace_id,
+        channelId: row.channel_id,
+        channelName: null,
+        threadTs: row.thread_ts,
+        messageTs: row.message_ts
+      },
+      sourceMessageLink: "",
+      requester: row.confirmation_target,
+      relevantContext: [],
+      assignee: null,
+      assigneeCandidates: [],
+      leaderReviewer: null,
+      confirmationTarget: row.confirmation_target,
+      confirmationState: "proposed",
+      dedupeKey: row.dedupe_key,
+      dueAt: null,
+      nextAction: null,
+      sourceUrl: null,
+      markdownPath: null
+    }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function slackTaskCandidateFromRow(row: SlackTaskCandidateRow): SlackTaskCandidateRecord {
+  const confirmationState = slackConfirmationResponseStates.includes(
+    row.confirmation_state as SlackTaskCandidateRecord["confirmationState"]
+  )
+    ? (row.confirmation_state as SlackTaskCandidateRecord["confirmationState"])
+    : "proposed";
+
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    taskId: row.task_id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    threadTs: row.thread_ts,
+    messageTs: row.message_ts,
+    sourceTs: row.source_ts ?? row.thread_ts ?? row.message_ts,
+    assigneeKey: row.assignee_key,
+    confirmationTarget: row.confirmation_target,
+    confirmationState,
+    dedupeKey: row.dedupe_key,
+    payload: safeJsonParse<SlackTaskCandidateMetadata>(row.payload, {
+      candidateId: row.task_id,
+      workspaceId: row.workspace_id,
+      channelId: row.channel_id,
+      threadTs: row.thread_ts,
+      messageTs: row.message_ts,
+      messageText: "",
+      taskTitle: "",
+      taskDescription: "",
+      sourceChannel: {
+        workspaceId: row.workspace_id,
+        channelId: row.channel_id,
+        channelName: null,
+        threadTs: row.thread_ts,
+        messageTs: row.message_ts
+      },
+      sourceMessageLink: "",
+      requester: row.confirmation_target ?? "",
+      relevantContext: [],
+      assignee: null,
+      assigneeCandidates: [],
+      leaderReviewer: null,
+      confirmationTarget: row.confirmation_target ?? "",
+      confirmationState,
+      dedupeKey: row.dedupe_key,
+      dueAt: null,
+      nextAction: null,
+      sourceUrl: null,
+      markdownPath: null
+    }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function normalizePendingSlackTaskCandidate(
+  candidate: SlackTaskCandidateMetadata | PendingSlackTaskCandidateMetadata
+): SlackTaskCandidateMetadata {
+  const sourceChannel = {
+    workspaceId: candidate.sourceChannel.workspaceId || candidate.workspaceId || "unknown",
+    channelId: candidate.sourceChannel.channelId || candidate.channelId || "",
+    channelName: candidate.sourceChannel.channelName ?? null,
+    threadTs: candidate.sourceChannel.threadTs ?? candidate.threadTs ?? null,
+    messageTs: candidate.sourceChannel.messageTs || candidate.messageTs || candidate.candidateId
+  };
+  const workspaceId = candidate.workspaceId || sourceChannel.workspaceId;
+  const channelId = candidate.channelId || sourceChannel.channelId;
+  const messageTs = candidate.messageTs || sourceChannel.messageTs;
+  const sourceMessageLink =
+    candidate.sourceMessageLink ||
+    candidate.sourceUrl ||
+    slackTaskCandidateFallbackSourceMessageLink(sourceChannel.channelId, sourceChannel.messageTs) ||
+    "";
+  const sourceUrl = candidate.sourceUrl ?? (sourceMessageLink ? sourceMessageLink : null);
+  const messageText = candidate.messageText || candidate.taskDescription || candidate.taskTitle;
+  const assigneeResolution =
+    candidate.assigneeResolution ??
+    (candidate.assignee ? "assigned" : candidate.assigneeCandidates.length > 1 ? "ambiguous" : "unassigned");
+  const requiresAssigneeConfirmation =
+    candidate.requiresAssigneeConfirmation ?? (assigneeResolution !== "assigned" || !candidate.assignee);
+  const relevantContext = candidate.relevantContext.length
+    ? candidate.relevantContext
+    : [messageText, candidate.taskDescription, sourceUrl ?? ""].filter((value) => value.trim());
+
+  return {
+    ...candidate,
+    workspaceId,
+    channelId,
+    messageTs,
+    messageText,
+    sourceChannel,
+    sourceMessageLink,
+    requester: candidate.requester || "unknown",
+    relevantContext,
+    assigneeResolution,
+    requiresAssigneeConfirmation,
+    memberMappingUncertainties: candidate.memberMappingUncertainties ?? [],
+    confirmationState: candidate.confirmationState ?? "proposed"
+  };
+}
+
+function slackTaskCandidateFallbackSourceMessageLink(channelId: string, messageTs: string): string | null {
+  if (!channelId || !messageTs) return null;
+  const permalinkTs = messageTs.replace(".", "");
+  return permalinkTs ? `https://slack.com/archives/${channelId}/p${permalinkTs}` : null;
+}
+
+function slackTaskCandidateSourceTs(candidate: SlackTaskCandidateMetadata): string {
+  return candidate.threadTs ?? candidate.sourceChannel.threadTs ?? candidate.messageTs ?? candidate.sourceChannel.messageTs;
 }
 
 function defaultAgentName(type: AgentType): string {
@@ -1980,37 +3378,138 @@ function normalizeToken(value: string): string {
   return value.trim().toLowerCase().replace(/^<@([a-z0-9]+)>$/i, "$1").replace(/^@/, "");
 }
 
-function buildSlackDigestCandidates(input: CreateSlackDigestInput): SlackDigestCandidate[] {
+function assigneeKeyFromSlackTaskCandidateDedupeKey(dedupeKey: string): string | null {
+  const parts = dedupeKey.split(":");
+  return parts.length >= 5 ? parts.at(-1) ?? null : null;
+}
+
+function buildSlackDigestMessageClassifications(input: CreateSlackDigestInput): SlackTaskificationClassification[] {
+  const threadCollectionMode = input.threadCollectionMode ?? (input.includeThreads === false ? "parent_messages" : "active_threads");
   return input.messages.flatMap((message) => {
-    if (message.botId) return [];
+    if (threadCollectionMode === "parent_messages" && isSlackThreadReply(message)) return [];
     const text = message.text.trim();
     if (!text) return [];
-    const reason = candidateReason(text);
-    if (!reason) return [];
+    const channelId = message.channelId ?? input.channelId;
     return [
-      {
-        id: newId("cand"),
-        channelId: input.channelId,
-        channelName: message.channelName ?? input.channelName ?? null,
-        ts: message.ts,
+      classifySlackTaskificationMessage(text, {
+        workspaceId: message.workspaceId ?? input.workspaceId ?? null,
+        channelId,
         threadTs: message.threadTs ?? message.parentTs ?? null,
-        userId: message.userId ?? null,
-        userName: message.userName ?? null,
-        text,
-        permalink: message.permalink ?? null,
-        reason
-      }
+        messageTs: message.ts,
+        botId: message.botId ?? null
+      })
     ];
   });
 }
 
-function candidateReason(text: string): string | null {
-  const normalized = text.toLowerCase();
-  if (/\/task|태스크|할 일|todo|action item|follow[- ]?up/.test(normalized)) return "explicit-task-language";
-  if (/해야|해줘|필요|수정|구현|확인|담당|owner|assign|fix|bug|blocked/.test(normalized)) {
-    return "action-language";
-  }
-  return null;
+function buildSlackDigestCandidates(
+  input: CreateSlackDigestInput,
+  classifications = buildSlackDigestMessageClassifications(input)
+): SlackDigestCandidate[] {
+  const classificationByMessageTs = new Map(classifications.map((classification) => [classification.messageTs, classification]));
+  const threadCollectionMode = input.threadCollectionMode ?? (input.includeThreads === false ? "parent_messages" : "active_threads");
+  return input.messages.flatMap((message) => {
+    if (message.botId) return [];
+    if (threadCollectionMode === "parent_messages" && isSlackThreadReply(message)) return [];
+    const text = message.text.trim();
+    if (!text) return [];
+    const workspaceId = message.workspaceId ?? input.workspaceId ?? null;
+    const channelId = message.channelId ?? input.channelId;
+    const channelName = message.channelName ?? input.channelName ?? null;
+    const threadTs = message.threadTs ?? message.parentTs ?? null;
+    const classification = classificationByMessageTs.get(message.ts) ?? classifySlackTaskificationMessage(text, {
+      workspaceId,
+      channelId,
+      threadTs,
+      messageTs: message.ts,
+      botId: message.botId ?? null
+    });
+    if (!classification.qualifies && !classification.isWorkRelated) return [];
+    const reason = classification.reason ?? classification.excludedReason ?? "work-related";
+    const relevantThreadMessages = input.messages
+      .filter((item) => (item.threadTs ?? item.parentTs ?? item.ts) === (threadTs ?? message.ts))
+      .map((item) => {
+        const parsed = { text: item.text, ts: item.ts } as { text: string; ts: string; userId?: string; botId?: string };
+        if (item.userId) parsed.userId = item.userId;
+        if (item.botId) parsed.botId = item.botId;
+        return parsed;
+      });
+    const content = deriveSlackTaskCandidateContent({
+      messageText: text,
+      contextMessages: relevantThreadMessages,
+      channelName,
+      channelId,
+      requester: message.userId ?? message.userName ?? null,
+      sourceUrl: message.permalink ?? null,
+      reason
+    });
+    const assigneeSlackUserIds = slackDigestCandidateAssigneeSlackUserIds(classification.assigneeCandidates);
+    return assigneeSlackUserIds.map((assigneeSlackUserId) => ({
+      id: newId("cand"),
+      workspaceId: classification.workspaceId,
+      channelId,
+      channelName,
+      ts: message.ts,
+      threadTs,
+      userId: message.userId ?? null,
+      userName: message.userName ?? null,
+      text,
+      taskTitle: content.title,
+      taskDescription: content.description,
+      dueAt: content.dueAt,
+      nextAction: content.nextAction,
+      relevantContext: content.relevantContext,
+      permalink: message.permalink ?? null,
+      sourceChannel: {
+        workspaceId: classification.workspaceId ?? workspaceId ?? "unknown",
+        channelId,
+        channelName,
+        threadTs,
+        messageTs: message.ts
+      },
+      sourceMessageLink: message.permalink ?? "",
+      requester: message.userId ?? message.userName ?? "unknown",
+      assigneeCandidates: classification.assigneeCandidates,
+      assignee: null,
+      assigneeSlackUserId,
+      assigneeResolution: classification.assigneeResolution,
+      requiresAssigneeConfirmation: classification.requiresAssigneeConfirmation,
+      memberMappingUncertainties: [],
+      reason,
+      classification
+    }));
+  });
+}
+
+function buildSlackDigestTaskDedupeKey(candidate: SlackDigestCandidate): string {
+  return `slack:${candidate.workspaceId ?? "unknown"}:${candidate.channelId}:${candidate.threadTs ?? candidate.ts}:${candidate.assigneeSlackUserId ?? "unassigned"}`;
+}
+
+function resolveSlackDigestCandidateAssignee(
+  store: { resolveOwner(value: string | null): OwnerMapping | null },
+  candidate: SlackDigestCandidate
+): OwnerMapping | null {
+  return candidate.assigneeSlackUserId ? store.resolveOwner(candidate.assigneeSlackUserId) : null;
+}
+
+function slackDigestCandidateAssigneeSlackUserIds(assigneeCandidates: string[]): Array<string | null> {
+  return assigneeCandidates.length ? assigneeCandidates : [null];
+}
+
+function buildSlackCollectedMessageDedupeKey(input: CreateSlackDigestInput, message: SlackDigestMessageInput): string {
+  const workspaceId = message.workspaceId ?? input.workspaceId ?? "unknown";
+  const channelId = message.channelId ?? input.channelId;
+  const threadTs = message.threadTs ?? message.parentTs ?? message.ts;
+  return `slackmsg:${workspaceId}:${channelId}:${threadTs}:${message.ts}`;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function isSlackThreadReply(message: SlackDigestMessageInput): boolean {
+  const parentTs = message.parentTs ?? message.threadTs ?? null;
+  return Boolean(parentTs && parentTs !== message.ts);
 }
 
 function inferPriority(text: string): TaskPriority {
@@ -2034,17 +3533,78 @@ function latestCandidateTs(candidates: SlackDigestCandidate[]): string | null {
     .sort((a, b) => Number(b) - Number(a))[0] ?? null;
 }
 
+function stringOrNull(value: unknown): string | null {
+  return stringValue(value) ?? null;
+}
+
+function isSlackWorkspaceId(value: string): boolean {
+  return /^[TE][A-Z0-9]{2,}$/.test(value);
+}
+
+function normalizeSlackWorkspaceChannels(channels: unknown): SlackWorkspaceChannel[] {
+  if (!Array.isArray(channels)) return [];
+  return mergeSlackWorkspaceChannels([], channels);
+}
+
+function slackWorkspaceChannelsFromInput(input: SlackWorkspaceConnectionInput, seenAt: string): SlackWorkspaceChannel[] {
+  const channels = normalizeSlackWorkspaceChannels(input.channels);
+  const channelId = stringValue(input.channelId);
+  if (channelId && isSlackChannelId(channelId)) {
+    channels.push({
+      channelId,
+      channelName: stringOrNull(input.channelName),
+      lastSeenAt: seenAt
+    });
+  }
+  return mergeSlackWorkspaceChannels([], channels);
+}
+
+function mergeSlackWorkspaceChannels(
+  existing: Array<Partial<SlackWorkspaceChannel>>,
+  incoming: Array<Partial<SlackWorkspaceChannel>>
+): SlackWorkspaceChannel[] {
+  const byChannel = new Map<string, SlackWorkspaceChannel>();
+  const observedOrder = new Map<string, number>();
+  for (const [index, channel] of [...existing, ...incoming].entries()) {
+    const channelId = stringValue(channel.channelId);
+    if (!channelId || !isSlackChannelId(channelId)) continue;
+    const previous = byChannel.get(channelId);
+    byChannel.set(channelId, {
+      channelId,
+      channelName: stringOrNull(channel.channelName) ?? previous?.channelName ?? null,
+      lastSeenAt: stringOrNull(channel.lastSeenAt) ?? previous?.lastSeenAt ?? null
+    });
+    observedOrder.set(channelId, index);
+  }
+  return Array.from(byChannel.values()).sort((a, b) => {
+    const aSeen = a.lastSeenAt ?? "";
+    const bSeen = b.lastSeenAt ?? "";
+    if (aSeen !== bSeen) return bSeen.localeCompare(aSeen);
+    const orderDelta = (observedOrder.get(b.channelId) ?? 0) - (observedOrder.get(a.channelId) ?? 0);
+    if (orderDelta !== 0) return orderDelta;
+    return a.channelId.localeCompare(b.channelId);
+  });
+}
+
+function isSlackChannelId(value: string): boolean {
+  return /^[CGD][A-Z0-9]{2,}$/.test(value);
+}
+
 function renderSlackCandidateDescription(candidate: SlackDigestCandidate): string {
   const lines = [
-    "Slack digest candidate:",
+    candidate.taskDescription || "Slack digest candidate:",
     "",
+    `- Candidate: ${candidate.id}`,
+    `- Workspace: ${candidate.workspaceId ?? "unknown"}`,
     `- Channel: ${candidate.channelName ? `#${candidate.channelName}` : candidate.channelId}`,
     `- User: ${candidate.userName ?? candidate.userId ?? "unknown"}`,
     `- Reason: ${candidate.reason}`,
     `- Timestamp: ${candidate.ts}`
   ];
+  if (candidate.dueAt) lines.push(`- Due: ${candidate.dueAt}`);
+  if (candidate.nextAction) lines.push(`- Next action: ${candidate.nextAction}`);
   if (candidate.permalink) lines.push(`- Source: ${candidate.permalink}`);
-  lines.push("", candidate.text);
+  if (!candidate.taskDescription) lines.push("", candidate.text);
   return lines.join("\n");
 }
 
@@ -2052,4 +3612,17 @@ function yamlValue(value: string | null | boolean): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   return JSON.stringify(value);
+}
+
+function yamlList(values: string[]): string {
+  return values.length ? `[${values.map((value) => yamlValue(value)).join(", ")}]` : "[]";
+}
+
+function yamlStringRecord(values: Record<string, string>, indent = "  "): string {
+  const entries = Object.entries(values);
+  if (!entries.length) return `${indent}{}`;
+  return entries
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${indent}${key}: ${yamlValue(value)}`)
+    .join("\n");
 }

@@ -1,0 +1,50 @@
+{
+  "name": "page-loading-animation-example-message",
+  "input": {
+    "workspaceId": "TPAGELOAD",
+    "channelId": "CPAGELOAD",
+    "channelName": "frontend",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000310.000400",
+        "threadTs": "1710000310.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> add the page loading animation example-message fixture before demo?",
+        "permalink": "https://example.slack.com/archives/CPAGELOAD/p1710000310000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TPAGELOAD",
+    "channelId": "CPAGELOAD",
+    "channelName": "frontend",
+    "ts": "1710000310.000400",
+    "threadTs": "1710000310.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> add the page loading animation example-message fixture before demo?",
+    "taskTitle": "Add the page loading animation example-message fixture before demo?",
+    "dueAt": "demo",
+    "nextAction": "Add the page loading animation example-message fixture before demo?",
+    "permalink": "https://example.slack.com/archives/CPAGELOAD/p1710000310000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CPAGELOAD/p1710000310000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}

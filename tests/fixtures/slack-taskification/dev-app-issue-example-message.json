@@ -1,0 +1,50 @@
+{
+  "name": "dev-app-issue-example-message",
+  "input": {
+    "workspaceId": "TDEVAPP",
+    "channelId": "CDEVAPP",
+    "channelName": "dev-app",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000320.000400",
+        "threadTs": "1710000320.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> add the dev app issue example-message fixture before demo?",
+        "permalink": "https://example.slack.com/archives/CDEVAPP/p1710000320000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TDEVAPP",
+    "channelId": "CDEVAPP",
+    "channelName": "dev-app",
+    "ts": "1710000320.000400",
+    "threadTs": "1710000320.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> add the dev app issue example-message fixture before demo?",
+    "taskTitle": "Add the dev app issue example-message fixture before demo?",
+    "dueAt": "demo",
+    "nextAction": "Add the dev app issue example-message fixture before demo?",
+    "permalink": "https://example.slack.com/archives/CDEVAPP/p1710000320000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CDEVAPP/p1710000320000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}
