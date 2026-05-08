@@ -1,6 +1,6 @@
 {
   "name": "@jaesong/agent-task-manager",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Self-hosted task manager for teams already using OpenClaw as their Slack bot.",
   "private": false,
   "type": "module",
