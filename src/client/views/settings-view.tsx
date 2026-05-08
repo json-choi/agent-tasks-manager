@@ -1,10 +1,18 @@
-import { Pencil, Send, XCircle } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Pencil, Plus, Send, Trash2, XCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { CommandBlock, ResultLine, SettingTile } from "../components/common";
 import { display, displayBoolean, errorMessage, relativeTime } from "../lib/format";
 import { checked, formField, formPayload, splitList } from "../lib/forms";
 import { filterRecords } from "../lib/tasks";
-import type { ApiClient, ChannelPolicy, MemberInvitation, OwnerMapping, PublicAccessPayload, ResultMessage, SetupStatus, Translator } from "../types";
+import type { ApiClient, ChannelPolicy, MemberInvitation, OwnerMapping, PublicAccessPayload, ResultMessage, SetupStatus, SlackCollectionScopeSettings, SlackCollectionScopeValidation, SlackWorkspaceChannel, SlackWorkspaceConnection, Translator } from "../types";
+
+type SlackThreadCollectionMode = SlackCollectionScopeSettings["channelThreadScopes"][string];
+
+const threadCollectionModeOptions: Array<{ value: SlackThreadCollectionMode; label: string }> = [
+  { value: "parent_messages", label: "Parent messages only" },
+  { value: "active_threads", label: "Active threads" },
+  { value: "full_thread_history", label: "Full thread history" }
+];
 
 export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; refreshKey: number; search: string; t: Translator }) {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
@@ -12,6 +20,15 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
   const [owners, setOwners] = useState<OwnerMapping[]>([]);
   const [invitations, setInvitations] = useState<MemberInvitation[]>([]);
   const [policies, setPolicies] = useState<ChannelPolicy[]>([]);
+  const [collectionScope, setCollectionScope] = useState<SlackCollectionScopeSettings | null>(null);
+  const [slackWorkspaces, setSlackWorkspaces] = useState<SlackWorkspaceConnection[]>([]);
+  const [selectedCollectionWorkspaceId, setSelectedCollectionWorkspaceId] = useState("");
+  const [selectedCollectionChannelIds, setSelectedCollectionChannelIds] = useState<string[]>([]);
+  const [mentionFilters, setMentionFilters] = useState<string[]>([]);
+  const [keywordFilters, setKeywordFilters] = useState<string[]>([]);
+  const [newMentionFilter, setNewMentionFilter] = useState("");
+  const [newKeywordFilter, setNewKeywordFilter] = useState("");
+  const [selectedMentionOwner, setSelectedMentionOwner] = useState("");
   const [editingOwner, setEditingOwner] = useState<OwnerMapping | null>(null);
   const [editingPolicy, setEditingPolicy] = useState<ChannelPolicy | null>(null);
   const [result, setResult] = useState<Record<string, ResultMessage | null>>({});
@@ -22,18 +39,22 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
   const loadSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [setupData, publicAccessData, ownersData, invitesData, channelsData] = await Promise.all([
+      const [setupData, publicAccessData, ownersData, invitesData, channelsData, collectionScopeData, workspaceData] = await Promise.all([
         api<SetupStatus>("/api/setup/status"),
         api<PublicAccessPayload>("/api/setup/public-access"),
         api<{ owners: OwnerMapping[] }>("/api/settings/owners"),
         api<{ invitations: MemberInvitation[] }>("/api/settings/member-invites"),
-        api<{ policies: ChannelPolicy[] }>("/api/settings/channels")
+        api<{ policies: ChannelPolicy[] }>("/api/settings/channels"),
+        api<{ collectionScope: SlackCollectionScopeSettings }>("/api/settings/slack/collection-scope"),
+        api<{ workspaces: SlackWorkspaceConnection[] }>("/api/settings/slack/workspaces")
       ]);
       setSetup(setupData);
       setPublicAccessPayload(publicAccessData);
       setOwners(ownersData.owners || []);
       setInvitations(invitesData.invitations || []);
       setPolicies(channelsData.policies || []);
+      setCollectionScope(collectionScopeData.collectionScope);
+      setSlackWorkspaces(workspaceData.workspaces || []);
     } catch (error) {
       setResult((current) => ({ ...current, settings: { text: errorMessage(error), ok: false } }));
     } finally {
@@ -44,6 +65,20 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
   useEffect(() => {
     void loadSettings();
   }, [loadSettings, refreshKey]);
+
+  useEffect(() => {
+    if (!collectionScope) return;
+    setSelectedCollectionChannelIds(collectionScope.channels);
+    setMentionFilters(collectionScope.mentions);
+    setKeywordFilters(collectionScope.keywords);
+    setNewMentionFilter("");
+    setNewKeywordFilter("");
+    setSelectedMentionOwner("");
+    setSelectedCollectionWorkspaceId((current) => {
+      if (current && collectionScope.workspaces.includes(current)) return current;
+      return collectionScope.workspaces[0] || slackWorkspaces[0]?.workspaceId || "";
+    });
+  }, [collectionScope, slackWorkspaces]);
 
   async function checkStorageFromDashboard() {
     try {
@@ -181,6 +216,34 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
     }
   }
 
+  async function onSaveCollectionScope(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+
+    try {
+      const channels = selectedChannelIds(form, selectedCollectionChannelIds);
+      const data = await api<{ collectionScope: SlackCollectionScopeSettings; validation?: SlackCollectionScopeValidation }>("/api/settings/slack/collection-scope", {
+        method: "PATCH",
+        body: JSON.stringify({
+          workspaces: selectedWorkspaceIds(form),
+          channels,
+          channelThreadScopes: selectedChannelThreadScopes(form, channels),
+          threads: splitList(formField(form, "threads")),
+          mentions: mentionFilters,
+          keywords: keywordFilters
+        })
+      });
+      setCollectionScope(data.collectionScope);
+      setResultMessage("collectionScope", {
+        text: collectionScopeValidationMessage(data.validation),
+        ok: !data.validation?.hasInvalid
+      });
+      await loadSettings();
+    } catch (error) {
+      setResultMessage("collectionScope", { text: errorMessage(error), ok: false });
+    }
+  }
+
   async function copyCommand(id: string, command: string) {
     await navigator.clipboard.writeText(command);
     setCopiedCommand(id);
@@ -191,15 +254,77 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
     setResult((current) => ({ ...current, [id]: message }));
   }
 
+  function onCollectionWorkspaceSelectionsChange(event: ChangeEvent<HTMLSelectElement>) {
+    const selected = selectedOptions(event.currentTarget);
+    if (!selected.length) {
+      setSelectedCollectionWorkspaceId("");
+      return;
+    }
+    setSelectedCollectionWorkspaceId((current) => selected.includes(current) ? current : selected[0] ?? "");
+  }
+
+  function onCollectionChannelSelectionsChange(event: ChangeEvent<HTMLSelectElement>) {
+    setSelectedCollectionChannelIds(selectedOptions(event.currentTarget));
+  }
+
+  function addMentionFilter(value: string) {
+    const nextMentions = splitList(value);
+    if (!nextMentions.length) return;
+    const invalidMentions = nextMentions.filter((item) => !isSlackMentionFilter(item));
+    if (invalidMentions.length) {
+      setResultMessage("collectionScope", { text: `Invalid mention filter: ${invalidMentions.join(", ")}`, ok: false });
+      return;
+    }
+    const duplicateMentions = nextMentions.filter((item) => mentionFilters.includes(item));
+    setMentionFilters((current) => Array.from(new Set([...current, ...nextMentions])));
+    setNewMentionFilter("");
+    setSelectedMentionOwner("");
+    setResultMessage("collectionScope", {
+      text: duplicateMentions.length ? `Duplicate mention ignored: ${Array.from(new Set(duplicateMentions)).join(", ")}` : "Mention filter added.",
+      ok: true
+    });
+  }
+
+  function removeMentionFilter(value: string) {
+    setMentionFilters((current) => current.filter((item) => item !== value));
+  }
+
+  function addKeywordFilter(value: string) {
+    const nextKeywords = splitList(value);
+    if (!nextKeywords.length) return;
+    const invalidKeywords = nextKeywords.filter((item) => !isSlackKeywordFilter(item));
+    if (invalidKeywords.length) {
+      setResultMessage("collectionScope", { text: `Invalid keyword filter: ${invalidKeywords.join(", ")}`, ok: false });
+      return;
+    }
+    const duplicateKeywords = nextKeywords.filter((item) => keywordFilters.includes(item));
+    setKeywordFilters((current) => Array.from(new Set([...current, ...nextKeywords])));
+    setNewKeywordFilter("");
+    setResultMessage("collectionScope", {
+      text: duplicateKeywords.length ? `Duplicate keyword ignored: ${Array.from(new Set(duplicateKeywords)).join(", ")}` : "Keyword filter added.",
+      ok: true
+    });
+  }
+
+  function removeKeywordFilter(value: string) {
+    setKeywordFilters((current) => current.filter((item) => item !== value));
+  }
+
   const publicAccess = publicAccessPayload?.publicAccess;
   const storage = setup?.storage || {};
   const filteredOwners = filterRecords(owners, ["ownerName", "slackUserId", "aliases"], search);
   const filteredInvitations = filterRecords(invitations, ["ownerName", "slackUserId", "status", "email"], search);
   const filteredPolicies = filterRecords(policies, ["channelId", "mode"], search);
+  const workspaceOptions = mergeWorkspaceOptions(slackWorkspaces, collectionScope?.workspaces || []);
+  const selectedCollectionWorkspace = workspaceOptions.find((workspace) => workspace.workspaceId === selectedCollectionWorkspaceId) ?? workspaceOptions[0] ?? null;
+  const channelOptions = mergeChannelOptions(selectedCollectionWorkspace?.channels || [], collectionScope?.channels || []);
+  const mentionOwnerOptions = owners
+    .filter((owner) => owner.active && owner.slackUserId)
+    .sort((a, b) => a.ownerName.localeCompare(b.ownerName));
 
   return (
     <section className="secondary-view">
-      {isLoading || !setup || !publicAccess ? <section className="panel secondary-panel"><p className="muted">{t("Loading...")}</p><ResultLine result={result.settings} t={t} /></section> : (
+      {isLoading || !setup || !publicAccess || !collectionScope ? <section className="panel secondary-panel"><p className="muted">{t("Loading...")}</p><ResultLine result={result.settings} t={t} /></section> : (
         <div className="settings-page">
           <section className="panel runtime-panel">
             <div className="list-head">
@@ -387,6 +512,177 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
             </div>
           </section>
 
+          <section className="panel wide-panel slack-collection-panel">
+            <div className="list-head">
+              <div>
+                <h2>{t("Slack Collection Scope")}</h2>
+                <p className="muted">{t("Select the Slack workspaces, channels, threads, mentions, and keywords ATM should collect.")}</p>
+              </div>
+              <span className="toggle-pill">{collectionScope.updatedAt ? t("Configured") : t("Not configured")}</span>
+            </div>
+            <form key={collectionScope.updatedAt || "new-collection-scope"} className="settings-form" onSubmit={onSaveCollectionScope}>
+              <div className="form-grid">
+                <label htmlFor="collection-workspaces">
+                  {t("Workspaces")}
+                  <select id="collection-workspaces" name="workspaceSelections" multiple defaultValue={collectionScope.workspaces} onChange={onCollectionWorkspaceSelectionsChange}>
+                    {workspaceOptions.length ? workspaceOptions.map((workspace) => (
+                      <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                        {workspaceLabel(workspace)}
+                      </option>
+                    )) : <option value="" disabled>{t("No Slack workspaces connected")}</option>}
+                  </select>
+                  <input name="workspaces" defaultValue="" placeholder={t("Add workspace IDs manually")} />
+                </label>
+                <label htmlFor="collection-channel-workspace">
+                  {t("Channel workspace")}
+                  <select
+                    id="collection-channel-workspace"
+                    value={selectedCollectionWorkspace?.workspaceId || ""}
+                    onChange={(event) => setSelectedCollectionWorkspaceId(event.currentTarget.value)}
+                    disabled={!workspaceOptions.length}
+                  >
+                    {workspaceOptions.length ? workspaceOptions.map((workspace) => (
+                      <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                        {workspaceLabel(workspace)}
+                      </option>
+                    )) : <option value="">{t("No Slack workspaces connected")}</option>}
+                  </select>
+                </label>
+                <label htmlFor="collection-channels">
+                  {t("Channels")}
+                  <select
+                    id="collection-channels"
+                    name="channelSelections"
+                    multiple
+                    value={selectedCollectionChannelIds}
+                    onChange={onCollectionChannelSelectionsChange}
+                    disabled={!channelOptions.length}
+                  >
+                    {channelOptions.length ? channelOptions.map((channel) => (
+                      <option key={channel.channelId} value={channel.channelId}>
+                        {channelLabel(channel)}
+                      </option>
+                    )) : <option value="" disabled>{t("No observed channels for this workspace")}</option>}
+                  </select>
+                  <input name="channels" defaultValue="" placeholder={t("Add channel IDs manually")} />
+                </label>
+                <label htmlFor="collection-threads">
+                  {t("Threads")}
+                  <input id="collection-threads" name="threads" defaultValue={collectionScope.threads.join(", ")} placeholder="1710000000.000400" />
+                </label>
+                <div className="thread-scope-field">
+                  <span>{t("Thread collection")}</span>
+                  {selectedCollectionChannelIds.length ? (
+                    <div className="thread-scope-list">
+                      {selectedCollectionChannelIds.map((channelId) => (
+                        <label key={channelId} htmlFor={`thread-scope-${channelId}`}>
+                          {threadScopeChannelLabel(channelId, channelOptions)}
+                          <select
+                            id={`thread-scope-${channelId}`}
+                            name={`threadScope:${channelId}`}
+                            defaultValue={collectionScope.channelThreadScopes?.[channelId] ?? "active_threads"}
+                          >
+                            {threadCollectionModeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{t(option.label)}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  ) : <p className="muted">{t("Select channels to configure thread collection.")}</p>}
+                </div>
+                <div className="mention-filter-field">
+                  <div className="field-head">
+                    <span>{t("Mention filters")}</span>
+                    <span className="toggle-pill">{String(mentionFilters.length)}</span>
+                  </div>
+                  <input type="hidden" name="mentions" value={mentionFilters.join(", ")} readOnly />
+                  <div className="mention-filter-list" aria-live="polite">
+                    {mentionFilters.length ? mentionFilters.map((mention) => (
+                      <div key={mention} className="mention-filter-row">
+                        <span>{mentionLabel(mention, owners)}</span>
+                        <button className="icon-button danger-button" type="button" aria-label={`${t("Remove mention filter")} ${mention}`} title={t("Remove mention filter")} onClick={() => removeMentionFilter(mention)}>
+                          <Trash2 className="icon" aria-hidden="true" />
+                          <span className="sr-only">{t("Remove mention filter")}</span>
+                        </button>
+                      </div>
+                    )) : <div className="empty-card">{t("No mention filters configured.")}</div>}
+                  </div>
+                  <div className="mention-filter-controls">
+                    <label htmlFor="collection-mention-owner">
+                      {t("Known Slack users")}
+                      <select
+                        id="collection-mention-owner"
+                        value={selectedMentionOwner}
+                        onChange={(event) => setSelectedMentionOwner(event.currentTarget.value)}
+                        disabled={!mentionOwnerOptions.length}
+                      >
+                        <option value="">{mentionOwnerOptions.length ? t("Select a user") : t("No mapped Slack users")}</option>
+                        {mentionOwnerOptions.map((owner) => (
+                          <option key={owner.id} value={owner.slackUserId ?? ""}>
+                            {owner.ownerName} ({owner.slackUserId})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" onClick={() => addMentionFilter(selectedMentionOwner)} disabled={!selectedMentionOwner}>
+                      <Plus className="icon" aria-hidden="true" />
+                      <span>{t("Add user")}</span>
+                    </button>
+                    <label htmlFor="collection-mention-manual">
+                      {t("Manual mention")}
+                      <input
+                        id="collection-mention-manual"
+                        value={newMentionFilter}
+                        onChange={(event) => setNewMentionFilter(event.currentTarget.value)}
+                        placeholder="U0123456789, @alice"
+                      />
+                    </label>
+                    <button type="button" onClick={() => addMentionFilter(newMentionFilter)} disabled={!newMentionFilter.trim()}>
+                      <Plus className="icon" aria-hidden="true" />
+                      <span>{t("Add mention")}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="keyword-filter-field">
+                  <div className="field-head">
+                    <span>{t("Keyword filters")}</span>
+                    <span className="toggle-pill">{String(keywordFilters.length)}</span>
+                  </div>
+                  <input type="hidden" name="keywords" value={keywordFilters.join(", ")} readOnly />
+                  <div className="keyword-filter-list" aria-live="polite">
+                    {keywordFilters.length ? keywordFilters.map((keyword) => (
+                      <div key={keyword} className="keyword-filter-row">
+                        <span>{keyword}</span>
+                        <button className="icon-button danger-button" type="button" aria-label={`${t("Remove keyword filter")} ${keyword}`} title={t("Remove keyword filter")} onClick={() => removeKeywordFilter(keyword)}>
+                          <Trash2 className="icon" aria-hidden="true" />
+                          <span className="sr-only">{t("Remove keyword filter")}</span>
+                        </button>
+                      </div>
+                    )) : <div className="empty-card">{t("No keyword filters configured.")}</div>}
+                  </div>
+                  <div className="keyword-filter-controls">
+                    <label htmlFor="collection-keyword-manual">
+                      {t("Manual keyword")}
+                      <input
+                        id="collection-keyword-manual"
+                        value={newKeywordFilter}
+                        onChange={(event) => setNewKeywordFilter(event.currentTarget.value)}
+                        placeholder="ship, incident, 고객, 배포"
+                      />
+                    </label>
+                    <button type="button" onClick={() => addKeywordFilter(newKeywordFilter)} disabled={!newKeywordFilter.trim()}>
+                      <Plus className="icon" aria-hidden="true" />
+                      <span>{t("Add keyword")}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button type="submit">{t("Save Collection Scope")}</button>
+              <ResultLine result={result.collectionScope} t={t} />
+            </form>
+          </section>
+
           <section className="panel wide-panel channel-policy-panel">
             <h2>{t("Channel Policies")}</h2>
             <p className="muted">{t("Manual by default; suggestions only where expected.")}</p>
@@ -426,4 +722,130 @@ export function SettingsView({ api, refreshKey, search, t }: { api: ApiClient; r
       )}
     </section>
   );
+}
+
+function selectedWorkspaceIds(form: HTMLFormElement): string[] {
+  const formData = new FormData(form);
+  const selected = formData
+    .getAll("workspaceSelections")
+    .map((value) => String(value))
+    .filter(Boolean);
+  return Array.from(new Set([...selected, ...splitList(formField(form, "workspaces"))]));
+}
+
+function selectedChannelIds(form: HTMLFormElement, selectedChannels: string[]): string[] {
+  return Array.from(new Set([...selectedChannels, ...splitList(formField(form, "channels"))]));
+}
+
+function selectedChannelThreadScopes(
+  form: HTMLFormElement,
+  selectedChannels: string[]
+): SlackCollectionScopeSettings["channelThreadScopes"] {
+  return Object.fromEntries(
+    selectedChannels.map((channelId) => {
+      const mode = formField(form, `threadScope:${channelId}`);
+      return [channelId, isThreadCollectionMode(mode) ? mode : "active_threads"];
+    })
+  );
+}
+
+function isThreadCollectionMode(value: string): value is SlackThreadCollectionMode {
+  return threadCollectionModeOptions.some((option) => option.value === value);
+}
+
+function selectedOptions(select: HTMLSelectElement): string[] {
+  return Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean);
+}
+
+function mergeWorkspaceOptions(
+  connections: SlackWorkspaceConnection[],
+  selectedWorkspaceIds: string[]
+): SlackWorkspaceConnection[] {
+  const byWorkspace = new Map<string, SlackWorkspaceConnection>();
+  for (const connection of connections) {
+    byWorkspace.set(connection.workspaceId, connection);
+  }
+  for (const workspaceId of selectedWorkspaceIds) {
+    if (byWorkspace.has(workspaceId)) continue;
+    byWorkspace.set(workspaceId, {
+      workspaceId,
+      workspaceName: null,
+      agentId: null,
+      agentName: null,
+      channels: [],
+      status: "configured"
+    });
+  }
+  return Array.from(byWorkspace.values()).sort((a, b) => a.workspaceId.localeCompare(b.workspaceId));
+}
+
+function mergeChannelOptions(channels: SlackWorkspaceChannel[], selectedChannelIds: string[]): SlackWorkspaceChannel[] {
+  const byChannel = new Map<string, SlackWorkspaceChannel>();
+  for (const channel of channels) {
+    byChannel.set(channel.channelId, channel);
+  }
+  for (const channelId of selectedChannelIds) {
+    if (byChannel.has(channelId)) continue;
+    byChannel.set(channelId, {
+      channelId,
+      channelName: null,
+      lastSeenAt: null
+    });
+  }
+  return Array.from(byChannel.values()).sort((a, b) => {
+    const aSeen = a.lastSeenAt ?? "";
+    const bSeen = b.lastSeenAt ?? "";
+    if (aSeen !== bSeen) return bSeen.localeCompare(aSeen);
+    return a.channelId.localeCompare(b.channelId);
+  });
+}
+
+function workspaceLabel(workspace: SlackWorkspaceConnection): string {
+  const name = workspace.workspaceName ? `${workspace.workspaceName} ` : "";
+  const agent = workspace.agentName ? ` · ${workspace.agentName}` : "";
+  return `${name}(${workspace.workspaceId}) · ${workspace.status}${agent}`;
+}
+
+function channelLabel(channel: SlackWorkspaceChannel): string {
+  const name = channel.channelName ? `#${channel.channelName} ` : "";
+  const seen = channel.lastSeenAt ? ` · seen ${relativeTime(channel.lastSeenAt)}` : "";
+  return `${name}(${channel.channelId})${seen}`;
+}
+
+function threadScopeChannelLabel(channelId: string, channels: SlackWorkspaceChannel[]): string {
+  const channel = channels.find((item) => item.channelId === channelId);
+  return channel?.channelName ? `#${channel.channelName} (${channelId})` : channelId;
+}
+
+function mentionLabel(mention: string, owners: OwnerMapping[]): string {
+  const owner = owners.find((item) => item.slackUserId === mention);
+  return owner ? `${owner.ownerName} (${mention})` : mention;
+}
+
+function collectionScopeValidationMessage(validation: SlackCollectionScopeValidation | undefined): string {
+  if (!validation) return "Slack collection scope saved.";
+  const savedCount = Object.values(validation.saved).reduce((total, items) => total + items.length, 0);
+  const parts = [`Slack collection scope saved (${savedCount} filter${savedCount === 1 ? "" : "s"}).`];
+  if (validation.hasDuplicates) {
+    parts.push(`Duplicates ignored: ${formatValidationItems(validation.duplicates)}.`);
+  }
+  if (validation.hasInvalid) {
+    parts.push(`Invalid filters ignored: ${formatValidationItems(validation.invalid)}.`);
+  }
+  return parts.join(" ");
+}
+
+function formatValidationItems(itemsByField: Record<string, string[]>): string {
+  return Object.entries(itemsByField)
+    .filter(([, items]) => items.length > 0)
+    .map(([field, items]) => `${field} (${items.join(", ")})`)
+    .join("; ");
+}
+
+function isSlackMentionFilter(value: string): boolean {
+  return /^[UW][A-Z0-9]{2,}$/.test(value) || /^@[A-Za-z0-9._-]{1,80}$/.test(value);
+}
+
+function isSlackKeywordFilter(value: string): boolean {
+  return value.length <= 120;
 }

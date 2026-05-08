@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSettings, AgentType, Diagnostic } from "../shared/types";
+import { buildOpenClawTaskManagerConfig } from "./openclaw-config.service";
 
 export interface AgentInstallInput {
   agent: AgentSettings;
@@ -157,12 +158,17 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
   const env = [
     `TASK_MANAGER_API_URL=${input.apiBaseUrl}`,
     `TASK_MANAGER_AGENT_ID=${input.agent.id}`,
-    `TASK_MANAGER_API_TOKEN=${input.token}`
+    `TASK_MANAGER_API_TOKEN=${input.token}`,
+    "TASK_MANAGER_SLACK_TASKIFICATION_PATH=/api/agent/task/propose"
   ];
   writeFileSync(layout.envPath, `${env.join("\n")}\n`, { mode: 0o600 });
-  writeFileSync(layout.manifestPath, JSON.stringify(openClawIntegrationManifest(input.apiBaseUrl), null, 2) + "\n", {
-    mode: 0o600
-  });
+  writeFileSync(
+    layout.manifestPath,
+    JSON.stringify(buildOpenClawTaskManagerConfig(input.apiBaseUrl, { includeDiagnostics: true }), null, 2) + "\n",
+    {
+      mode: 0o600
+    }
+  );
 
   const reloadCommand = reloadCommandFor(input.agent.type, input.cliPath, "install");
   const reload = input.runReload === false ? skippedReload(reloadCommand) : runReload(reloadCommand);
@@ -206,6 +212,11 @@ export function installAgentPlugin(input: AgentInstallInput): AgentInstallResult
       ok: true,
       label: "Outbox worker",
       message: "OpenClaw must call task-manager.pollOutbox on a short schedule to deliver DMs and thread updates."
+    },
+    {
+      ok: true,
+      label: "Slack collection worker",
+      message: "OpenClaw must call task-manager.runScheduledSlackCollection on the configured cadence to collect scoped Slack messages."
     },
     {
       ok: reload.ran ? reload.ok : true,
@@ -458,35 +469,6 @@ function reloadCommandFor(
   assertOpenClaw(type);
   const cli = cliPath?.trim() || "openclaw";
   return [cli, "skills", "reload"];
-}
-
-function openClawIntegrationManifest(apiBaseUrl: string) {
-  return {
-    name: "task-manager",
-    runtime: "openclaw",
-    apiBaseUrl,
-    skill: "./task-manager-skill.ts",
-    env: "./task-manager.env",
-    handlers: {
-      slackMessage: "handleMessage",
-      slackInteraction: "handleInteraction",
-      scheduledOutbox: "pollOutbox"
-    },
-    requiredSlackCapabilities: [
-      "read channel messages",
-      "read thread replies",
-      "post thread replies",
-      "send DMs",
-      "receive block action interactions"
-    ],
-    smokeTests: [
-      "connect-test",
-      "thread-reply-action",
-      "dm-assignment-action",
-      "interaction-forwarding",
-      "outbox-polling"
-    ]
-  };
 }
 
 function assertOpenClaw(type: AgentType): void {

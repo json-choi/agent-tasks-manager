@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import type { AgentSettings, AgentThreadContext, AgentType, Diagnostic, OwnerMapping, SlackAction, Task } from "../shared/types";
+import { slackConfirmationActionId, slackConfirmationCallbackId } from "../shared/types";
 import { compactText } from "../shared/utils";
+import { buildOpenClawTaskManagerConfig } from "../services/openclaw-config.service";
 
 export interface AgentAdapter {
   readonly type: AgentType;
@@ -32,6 +34,11 @@ export class OpenClawAdapter implements AgentAdapter {
         ok: true,
         label: "Mention gating",
         message: "Keep OpenClaw configured to ignore bot replies and only react to explicit commands in manual-only channels."
+      },
+      {
+        ok: true,
+        label: "Scheduled collection",
+        message: "Run task-manager.runScheduledSlackCollection on the installed cadence for configured Slack scopes."
       }
     ];
   }
@@ -50,7 +57,7 @@ export class OpenClawAdapter implements AgentAdapter {
       `mkdir -p ${sharedDir}`,
       `cp -R agent-plugin/shared/* ${sharedDir}/`,
       `printf '%s\n' 'TASK_MANAGER_API_URL=${apiBaseUrl}' 'TASK_MANAGER_AGENT_ID=${settings.id}' 'TASK_MANAGER_API_TOKEN=${token ?? "<token shown once>"}' > ${skillDir}/task-manager.env`,
-      `cat > ${skillDir}/openclaw-task-manager.json <<'JSON'\n${JSON.stringify(openClawInstallManifest(apiBaseUrl), null, 2)}\nJSON`,
+      `cat > ${skillDir}/openclaw-task-manager.json <<'JSON'\n${JSON.stringify(buildOpenClawTaskManagerConfig(apiBaseUrl), null, 2)}\nJSON`,
       `${cli} skills reload`
     ];
   }
@@ -106,21 +113,21 @@ export class OpenClawAdapter implements AgentAdapter {
         type: "button",
         text: { type: "plain_text", text: "Accept" },
         style: "primary",
-        action_id: "atm_assignment_accept",
+        action_id: slackConfirmationActionId.assignmentAccept,
         value: requestId
       },
       {
         type: "button",
         text: { type: "plain_text", text: "Decline" },
         style: "danger",
-        action_id: "atm_assignment_decline",
+        action_id: slackConfirmationActionId.assignmentDecline,
         value: requestId
       }
     ];
     if (ownerOptions.length > 0) {
       actionElements.unshift({
         type: "static_select",
-        action_id: "atm_assignment_delegate_select",
+        action_id: slackConfirmationActionId.assignmentDelegateSelect,
         placeholder: { type: "plain_text", text: "Delegate to" },
         options: ownerOptions
       });
@@ -155,7 +162,7 @@ export class OpenClawAdapter implements AgentAdapter {
         text: `Can you take ${task.id}: ${task.title}?`,
         blocks,
         metadata: {
-          type: "atm.assignment_request",
+          type: slackConfirmationCallbackId.assignmentConfirmation,
           requestId,
           taskId: task.id
         }
@@ -220,19 +227,4 @@ function diagnoseCli(label: string, value: string): Diagnostic {
   }
 
   return { ok: false, label, message: `${value} was not found in PATH.` };
-}
-
-function openClawInstallManifest(apiBaseUrl: string) {
-  return {
-    name: "task-manager",
-    runtime: "openclaw",
-    apiBaseUrl,
-    skill: "./task-manager-skill.ts",
-    env: "./task-manager.env",
-    handlers: {
-      slackMessage: "handleMessage",
-      slackInteraction: "handleInteraction",
-      scheduledOutbox: "pollOutbox"
-    }
-  };
 }

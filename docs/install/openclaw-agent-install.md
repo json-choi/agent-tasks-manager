@@ -29,7 +29,7 @@ By the end of this flow:
 - The first local admin is created through unattended bootstrap or the first-run setup UI.
 - The OpenClaw Task Manager skill is installed into the OpenClaw workspace.
 - The generated agent API token is written by ATM to `<openclaw-workspace>/skills/task-manager/task-manager.env`.
-- OpenClaw has reloaded skills and can call `task-manager.handleMessage`, `task-manager.handleInteraction`, and `task-manager.pollOutbox`.
+- OpenClaw has reloaded skills and can call `task-manager.handleMessage`, `task-manager.handleInteraction`, `task-manager.pollOutbox`, and `task-manager.runScheduledSlackCollection`.
 
 ## Slack Approval Flow
 
@@ -172,6 +172,7 @@ curl -s -X POST "$TASK_MANAGER_API_URL/api/agent/connect/test" \
    - Slack messages route to `task-manager.handleMessage`.
    - Slack block actions route to `task-manager.handleInteraction`.
    - Scheduled polling calls `task-manager.pollOutbox`.
+   - Scheduled Slack collection calls `task-manager.runScheduledSlackCollection`.
 
 ## Clean Uninstall Flow
 

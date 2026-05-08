@@ -1,0 +1,50 @@
+{
+  "name": "server-latency-before-3-example-message",
+  "input": {
+    "workspaceId": "TENG",
+    "channelId": "CENG",
+    "channelName": "eng",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000330.000400",
+        "threadTs": "1710000330.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> investigate server latency before 3?",
+        "permalink": "https://example.slack.com/archives/CENG/p1710000330000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TENG",
+    "channelId": "CENG",
+    "channelName": "eng",
+    "ts": "1710000330.000400",
+    "threadTs": "1710000330.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> investigate server latency before 3?",
+    "taskTitle": "Investigate server latency before 3?",
+    "dueAt": "3",
+    "nextAction": "Investigate server latency before 3?",
+    "permalink": "https://example.slack.com/archives/CENG/p1710000330000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CENG/p1710000330000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}

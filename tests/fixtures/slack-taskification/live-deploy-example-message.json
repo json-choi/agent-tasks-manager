@@ -1,0 +1,50 @@
+{
+  "name": "live-deploy-example-message",
+  "input": {
+    "workspaceId": "TLIVE",
+    "channelId": "CLIVE",
+    "channelName": "live-deploy",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000340.000400",
+        "threadTs": "1710000340.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> deploy the live build to production before 5pm?",
+        "permalink": "https://example.slack.com/archives/CLIVE/p1710000340000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TLIVE",
+    "channelId": "CLIVE",
+    "channelName": "live-deploy",
+    "ts": "1710000340.000400",
+    "threadTs": "1710000340.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> deploy the live build to production before 5pm?",
+    "taskTitle": "Deploy the live build to production before 5pm?",
+    "dueAt": "5pm",
+    "nextAction": "Deploy the live build to production before 5pm?",
+    "permalink": "https://example.slack.com/archives/CLIVE/p1710000340000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CLIVE/p1710000340000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}

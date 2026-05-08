@@ -1414,6 +1414,90 @@ tbody tr:hover { background: #f7fbfa; }
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }
+.thread-scope-field {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+.thread-scope-list {
+  display: grid;
+  gap: 8px;
+}
+.thread-scope-list label {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: none;
+}
+.mention-filter-field,
+.keyword-filter-field {
+  min-width: 0;
+  display: grid;
+  grid-column: span 2;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+.field-head {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mention-filter-list,
+.keyword-filter-list {
+  display: grid;
+  gap: 8px;
+}
+.mention-filter-row,
+.keyword-filter-row {
+  min-width: 0;
+  min-height: var(--control-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--icon-control-size);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 0 0 11px;
+}
+.mention-filter-row > span,
+.keyword-filter-row > span {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.mention-filter-row .icon-button,
+.keyword-filter-row .icon-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.mention-filter-controls,
+.keyword-filter-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+.keyword-filter-controls {
+  grid-template-columns: minmax(180px, 1fr) auto;
+}
+.mention-filter-controls label,
+.keyword-filter-controls label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: none;
+}
 .check-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1630,6 +1714,12 @@ tbody tr:hover { background: #f7fbfa; }
   .command-grid,
   .insight-grid,
   .login-screen { grid-template-columns: 1fr; }
+  .mention-filter-field,
+  .keyword-filter-field { grid-column: auto; }
+  .mention-filter-controls,
+  .keyword-filter-controls { grid-template-columns: 1fr; }
+  .mention-filter-controls button,
+  .keyword-filter-controls button { width: 100%; }
   .detail-field-grid,
   .detail-edit-grid { grid-template-columns: 1fr; }
   .composer-head {

@@ -1,0 +1,298 @@
+{
+  "schemaVersion": "slack_taskification_extraction_examples.v1",
+  "examples": [
+    {
+      "name": "assigned-app-mention-before-3pm",
+      "input": {
+        "eventType": "app_mention",
+        "workspaceId": "T_WORK",
+        "text": "<@UOPENCLAW> taskify this for <@UALICE>: ship the billing fix by 3pm",
+        "userId": "UREPORTER",
+        "userName": "Reporter",
+        "channelId": "C_WORK",
+        "channelName": "eng",
+        "messageTs": "1710000000.000900",
+        "threadTs": "1710000000.000800",
+        "permalink": "https://example.slack.com/archives/C_WORK/p1710000000000900"
+      },
+      "options": {
+        "agentUserId": "UOPENCLAW"
+      },
+      "expected": {
+        "title": "Ship the billing fix by 3pm",
+        "intent": {
+          "source": "app_mention",
+          "command": {
+            "type": "propose",
+            "assigneeId": "UALICE"
+          },
+          "assigneeCandidates": ["UALICE"],
+          "primaryAssigneeId": "UALICE",
+          "assigneeResolution": "assigned",
+          "requiresAssigneeConfirmation": false
+        },
+        "context": {
+          "workspaceId": "T_WORK",
+          "channelId": "C_WORK",
+          "channelName": "eng",
+          "threadTs": "1710000000.000800",
+          "messageTs": "1710000000.000900",
+          "reporterId": "UREPORTER",
+          "reporterName": "Reporter",
+          "sourceUrl": "https://example.slack.com/archives/C_WORK/p1710000000000900",
+          "context": {
+            "channelId": "C_WORK",
+            "threadTs": "1710000000.000800",
+            "messageTs": "1710000000.000900",
+            "authorId": "UREPORTER",
+            "authorName": "Reporter"
+          }
+        },
+        "candidates": [
+          {
+            "title": "Ship the billing fix by 3pm",
+            "assignee": "UALICE",
+            "assigneeCandidates": ["UALICE"],
+            "assigneeResolution": "assigned",
+            "requiresAssigneeConfirmation": false,
+            "dueAt": "3pm",
+            "confirmationState": "proposed",
+            "dedupeKey": "slack:T_WORK:C_WORK:1710000000.000800:UALICE",
+            "confirmed": false,
+            "automatic": false,
+            "taskification": {
+              "workspaceId": "T_WORK",
+              "channelId": "C_WORK",
+              "threadTs": "1710000000.000800",
+              "messageTs": "1710000000.000900",
+              "messageText": "<@UOPENCLAW> taskify this for <@UALICE>: ship the billing fix by 3pm",
+              "source": "app_mention",
+              "isWorkRelated": true,
+              "taskTitle": "Ship the billing fix by 3pm",
+              "assignee": "UALICE",
+              "assigneeCandidates": ["UALICE"],
+              "assigneeResolution": "assigned",
+              "requiresAssigneeConfirmation": false,
+              "leaderReviewer": "UREPORTER",
+              "confirmationTarget": "UREPORTER",
+              "confirmationState": "proposed",
+              "confirmationAction": null,
+              "dedupeKey": "slack:T_WORK:C_WORK:1710000000.000800:UALICE",
+              "dueAt": "3pm",
+              "nextAction": null,
+              "sourceUrl": "https://example.slack.com/archives/C_WORK/p1710000000000900",
+              "markdownPath": null
+            },
+            "taskDescriptionIncludes": [
+              "Slack taskification request:",
+              "Original message:",
+              "Source: https://example.slack.com/archives/C_WORK/p1710000000000900"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unassigned-message-needs-leader-assignee",
+      "input": {
+        "eventType": "message",
+        "workspaceId": "T_WORK",
+        "text": "Need an owner to investigate the checkout regression by EOD",
+        "userId": "ULEADER",
+        "userName": "Leader",
+        "channelId": "C_WORK",
+        "channelName": "eng",
+        "messageTs": "1710000000.000902",
+        "permalink": "https://example.slack.com/archives/C_WORK/p1710000000000902"
+      },
+      "expected": {
+        "title": "Need an owner to investigate the checkout regression by EOD",
+        "intent": {
+          "source": "message",
+          "command": {
+            "type": "propose",
+            "assigneeId": null
+          },
+          "assigneeCandidates": [],
+          "primaryAssigneeId": null,
+          "assigneeResolution": "ambiguous",
+          "requiresAssigneeConfirmation": true
+        },
+        "context": {
+          "workspaceId": "T_WORK",
+          "channelId": "C_WORK",
+          "channelName": "eng",
+          "threadTs": "1710000000.000902",
+          "messageTs": "1710000000.000902",
+          "reporterId": "ULEADER",
+          "reporterName": "Leader",
+          "sourceUrl": "https://example.slack.com/archives/C_WORK/p1710000000000902",
+          "context": {
+            "channelId": "C_WORK",
+            "threadTs": "1710000000.000902",
+            "messageTs": "1710000000.000902",
+            "authorId": "ULEADER",
+            "authorName": "Leader"
+          }
+        },
+        "candidates": [
+          {
+            "title": "Need an owner to investigate the checkout regression by EOD",
+            "assigneeCandidates": [],
+            "assigneeResolution": "ambiguous",
+            "requiresAssigneeConfirmation": true,
+            "dueAt": "EOD",
+            "confirmationState": "assigning",
+            "dedupeKey": "slack:T_WORK:C_WORK:1710000000.000902:unassigned",
+            "confirmed": false,
+            "automatic": true,
+            "taskification": {
+              "workspaceId": "T_WORK",
+              "channelId": "C_WORK",
+              "threadTs": "1710000000.000902",
+              "messageTs": "1710000000.000902",
+              "source": "message",
+              "isWorkRelated": true,
+              "taskTitle": "Need an owner to investigate the checkout regression by EOD",
+              "assignee": null,
+              "assigneeCandidates": [],
+              "assigneeResolution": "ambiguous",
+              "requiresAssigneeConfirmation": true,
+              "leaderReviewer": "ULEADER",
+              "confirmationTarget": "ULEADER",
+              "confirmationState": "assigning",
+              "confirmationAction": null,
+              "dedupeKey": "slack:T_WORK:C_WORK:1710000000.000902:unassigned",
+              "dueAt": "EOD",
+              "nextAction": null,
+              "sourceUrl": "https://example.slack.com/archives/C_WORK/p1710000000000902",
+              "markdownPath": null
+            },
+            "taskDescriptionIncludes": [
+              "Slack taskification request:",
+              "Need an owner to investigate the checkout regression by EOD"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "multi-mention-slash-command-splits-candidates",
+      "input": {
+        "eventType": "slash_command",
+        "teamId": "T_TEAM",
+        "text": "/task follow up with <@UALICE> and <@UBOB>: prep p1 launch checklist before tomorrow",
+        "userId": "UREPORTER",
+        "userName": "Reporter",
+        "channelId": "C_WORK",
+        "channelName": "launch",
+        "messageTs": "1710000000.000901"
+      },
+      "expected": {
+        "title": "Prep p1 launch checklist before tomorrow",
+        "intent": {
+          "source": "slash_command",
+          "command": {
+            "type": "propose",
+            "assigneeId": "UALICE"
+          },
+          "assigneeCandidates": ["UALICE", "UBOB"],
+          "primaryAssigneeId": "UALICE",
+          "assigneeResolution": "ambiguous",
+          "requiresAssigneeConfirmation": true
+        },
+        "context": {
+          "workspaceId": "T_TEAM",
+          "channelId": "C_WORK",
+          "channelName": "launch",
+          "threadTs": "1710000000.000901",
+          "messageTs": "1710000000.000901",
+          "reporterId": "UREPORTER",
+          "reporterName": "Reporter",
+          "sourceUrl": null,
+          "context": {
+            "channelId": "C_WORK",
+            "threadTs": "1710000000.000901",
+            "messageTs": "1710000000.000901",
+            "authorId": "UREPORTER",
+            "authorName": "Reporter"
+          }
+        },
+        "candidates": [
+          {
+            "title": "Prep p1 launch checklist before tomorrow",
+            "assignee": "UALICE",
+            "assigneeCandidates": ["UALICE", "UBOB"],
+            "assigneeResolution": "ambiguous",
+            "requiresAssigneeConfirmation": true,
+            "priority": "P1",
+            "dueAt": "tomorrow",
+            "confirmationState": "proposed",
+            "dedupeKey": "slack:T_TEAM:C_WORK:1710000000.000901:UALICE",
+            "confirmed": false,
+            "automatic": false,
+            "taskification": {
+              "workspaceId": "T_TEAM",
+              "channelId": "C_WORK",
+              "threadTs": "1710000000.000901",
+              "messageTs": "1710000000.000901",
+              "source": "slash_command",
+              "isWorkRelated": true,
+              "taskTitle": "Prep p1 launch checklist before tomorrow",
+              "assignee": "UALICE",
+              "assigneeCandidates": ["UALICE", "UBOB"],
+              "assigneeResolution": "ambiguous",
+              "requiresAssigneeConfirmation": true,
+              "leaderReviewer": "UREPORTER",
+              "confirmationTarget": "UREPORTER",
+              "confirmationState": "proposed",
+              "confirmationAction": null,
+              "dedupeKey": "slack:T_TEAM:C_WORK:1710000000.000901:UALICE",
+              "dueAt": "tomorrow",
+              "nextAction": null,
+              "sourceUrl": null,
+              "markdownPath": null
+            },
+            "taskDescriptionIncludes": ["Slack taskification request:"]
+          },
+          {
+            "title": "Prep p1 launch checklist before tomorrow",
+            "assignee": "UBOB",
+            "assigneeCandidates": ["UALICE", "UBOB"],
+            "assigneeResolution": "ambiguous",
+            "requiresAssigneeConfirmation": true,
+            "priority": "P1",
+            "dueAt": "tomorrow",
+            "confirmationState": "proposed",
+            "dedupeKey": "slack:T_TEAM:C_WORK:1710000000.000901:UBOB",
+            "confirmed": false,
+            "automatic": false,
+            "taskification": {
+              "workspaceId": "T_TEAM",
+              "channelId": "C_WORK",
+              "threadTs": "1710000000.000901",
+              "messageTs": "1710000000.000901",
+              "source": "slash_command",
+              "isWorkRelated": true,
+              "taskTitle": "Prep p1 launch checklist before tomorrow",
+              "assignee": "UBOB",
+              "assigneeCandidates": ["UALICE", "UBOB"],
+              "assigneeResolution": "ambiguous",
+              "requiresAssigneeConfirmation": true,
+              "leaderReviewer": "UREPORTER",
+              "confirmationTarget": "UREPORTER",
+              "confirmationState": "proposed",
+              "confirmationAction": null,
+              "dedupeKey": "slack:T_TEAM:C_WORK:1710000000.000901:UBOB",
+              "dueAt": "tomorrow",
+              "nextAction": null,
+              "sourceUrl": null,
+              "markdownPath": null
+            },
+            "taskDescriptionIncludes": ["Slack taskification request:"]
+          }
+        ]
+      }
+    }
+  ]
+}

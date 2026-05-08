@@ -158,7 +158,7 @@
   "verification": [
     "Check <openclaw-workspace>/skills/task-manager/task-manager.env exists.",
     "Call POST $TASK_MANAGER_API_URL/api/agent/connect/test with x-agent-id and bearer token from task-manager.env.",
-    "Confirm OpenClaw routes Slack messages, interactions, and scheduled outbox polling to the task-manager skill."
+    "Confirm OpenClaw routes Slack messages, interactions, scheduled outbox polling, and scheduled Slack collection to the task-manager skill."
   ],
   "uninstallVerification": [
     "Check <openclaw-workspace>/skills/task-manager no longer exists.",

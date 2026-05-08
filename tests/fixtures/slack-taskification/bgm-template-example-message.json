@@ -1,0 +1,50 @@
+{
+  "name": "bgm-template-example-message",
+  "input": {
+    "workspaceId": "TBGM",
+    "channelId": "CBGM",
+    "channelName": "bgm-template",
+    "messages": [
+      {
+        "type": "message",
+        "ts": "1710000360.000400",
+        "threadTs": "1710000360.000400",
+        "userId": "U_LEADER",
+        "userName": "Jae",
+        "text": "Can <@U_ALICE> add the BGM template example-message fixture before demo?",
+        "permalink": "https://example.slack.com/archives/CBGM/p1710000360000400"
+      }
+    ]
+  },
+  "expectedCandidate": {
+    "workspaceId": "TBGM",
+    "channelId": "CBGM",
+    "channelName": "bgm-template",
+    "ts": "1710000360.000400",
+    "threadTs": "1710000360.000400",
+    "userId": "U_LEADER",
+    "userName": "Jae",
+    "text": "Can <@U_ALICE> add the BGM template example-message fixture before demo?",
+    "taskTitle": "Add the BGM template example-message fixture before demo?",
+    "dueAt": "demo",
+    "nextAction": "Add the BGM template example-message fixture before demo?",
+    "permalink": "https://example.slack.com/archives/CBGM/p1710000360000400",
+    "sourceMessageLink": "https://example.slack.com/archives/CBGM/p1710000360000400",
+    "requester": "U_LEADER",
+    "assigneeCandidates": ["U_ALICE"],
+    "assignee": "Alice",
+    "assigneeSlackUserId": "U_ALICE",
+    "assigneeResolution": "assigned",
+    "requiresAssigneeConfirmation": false,
+    "reason": "mention-assignment",
+    "classification": {
+      "qualifies": true,
+      "isWorkRelated": true,
+      "reason": "mention-assignment",
+      "excludedReason": null,
+      "assigneeCandidates": ["U_ALICE"],
+      "assigneeResolution": "assigned",
+      "requiresAssigneeConfirmation": false
+    }
+  }
+}
